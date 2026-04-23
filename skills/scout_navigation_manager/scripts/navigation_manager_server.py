@@ -157,10 +157,6 @@ class ScoutNavigationManagerServer(object):
         self._topic_sub = rospy.Subscriber(
             "/scout_navigation_manager/set_pose", String, self._set_pose_topic_callback, queue_size=10
         )
-        # 发布目标派发坐标的话题（供客户端及其他节点订阅）
-        self._pose_pub = rospy.Publisher(
-            "/scout_navigation_manager/goal_dispatched", String, queue_size=1, latch=True
-        )
         # 提供导航状态服务
         self._status_srv = rospy.Service(
             "/scout_navigation_manager/navigation_status", Trigger, self._navigation_status_callback
@@ -175,6 +171,7 @@ class ScoutNavigationManagerServer(object):
         )
         if SetString is not None:
             # 如果可用，提供设置姿态的服务
+            
             self._set_pose_srv = rospy.Service(
                 "/scout_navigation_manager/set_pose", SetString, self._set_pose_service_callback
             )
@@ -338,9 +335,6 @@ class ScoutNavigationManagerServer(object):
             pose["y"],
             pose["yaw"],
         )
-        # 通过 Topic 发布坐标信息，供客户端及其他节点获取
-        coord_msg = "[%s] x=%.3f y=%.3f yaw=%.1f" % (target_name, pose["x"], pose["y"], pose["yaw"])
-        self._pose_pub.publish(String(data=coord_msg))
         self._client.send_goal(
             goal,
             done_cb=lambda state, result, target=target_name: self._done_callback(target, state, result),

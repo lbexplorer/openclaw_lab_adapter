@@ -1,0 +1,26 @@
+llm:
+  api_key_envs:
+    - MOONSHOT_API_KEY
+    - KIMI_API_KEY
+    - OPENCLAW_LLM_API_KEY
+    - OPENAI_API_KEY
+  base_url_env: OPENCLAW_LLM_BASE_URL
+  model_env: OPENCLAW_LLM_MODEL
+  default_base_url: https://api.moonshot.cn/v1
+  default_model: kimi-k2.5
+  timeout_seconds: 30
+
+agent:
+  max_actions: 3
+
+skills:
+  scout_navigation_manager:
+    enabled: true
+    description: "将用户的地点类自然语言映射到 1201 地图中的命名导航点，并调用导航客户端发送目标。"
+    arguments:
+      target: "命名点名称，例如 原点、接待区、实验台、物料区、巡检点A"
+  scout_move_control:
+    enabled: true
+    description: "将简短运动意图转换为底盘动作命令，并调用移动控制客户端下发字符串命令。"
+    arguments:
+      command: "动作命令字符串，例如 forward 1, left 1, stop 0.5"

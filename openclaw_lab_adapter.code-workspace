@@ -1,0 +1,22 @@
+{
+  "folders": [
+    {
+      "name": "openclaw_lab_adapter",
+      "path": "."
+    },
+    {
+      "name": "sailors_onboard-main",
+      "path": "../sailors_onboard-main"
+    },
+    {
+      "name": "openclaw",
+      "path": "../openclaw"
+    }
+  ],
+  "settings": {
+    "files.readonlyInclude": {
+      "**/sailors_onboard-main/**": true,
+      "**/openclaw/**": true
+    }
+  }
+}
