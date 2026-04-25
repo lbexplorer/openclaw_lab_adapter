@@ -60,6 +60,8 @@ def check_config_structure(config: dict) -> None:
         fail("缺少 llm.default_model")
     if int(agent_cfg.get("max_actions", 0)) <= 0:
         fail("agent.max_actions 非法")
+    if "confirmation_policy" not in agent_cfg:
+        fail("agent.confirmation_policy 缺失")
     print(f"[OK] max_actions = {agent_cfg.get('max_actions')}")
 
     for name, payload in skills_cfg.items():
@@ -69,12 +71,22 @@ def check_config_structure(config: dict) -> None:
             fail(f"{name} 缺少 description")
         if not isinstance(payload.get("arguments"), dict):
             fail(f"{name} 缺少 arguments 映射")
+        if not payload.get("examples"):
+            fail(f"{name} 缺少 examples")
+        if not payload.get("capabilities"):
+            fail(f"{name} 缺少 capabilities")
         print(f"[OK] {name}")
 
 
-def check_tool_validation(module) -> None:
+def check_catalog_and_validation(module) -> None:
     config = module.load_agent_config(CONFIG_PATH)
     skill_catalog = module.build_skill_catalog(config, module.load_waypoint_names())
+
+    overview = module.format_capability_overview(skill_catalog)
+    if "当前已启用 skills" not in overview:
+        fail("能力总览生成失败")
+    if "导航地点" not in overview:
+        fail("导航地点未写入能力总览")
 
     tools = module.build_tools(skill_catalog)
     if not isinstance(tools, list) or len(tools) < 2:
@@ -92,6 +104,12 @@ def check_tool_validation(module) -> None:
     )
     if move_args["command"] != "forward 1":
         fail("合法移动工具参数验证失败")
+
+    chained_args = module.validate_tool_call(
+        "scout_move_control", {"command": "forward 1, left 1"}, skill_catalog
+    )
+    if chained_args["command"] != "forward 1, left 1":
+        fail("连续移动动作参数验证失败")
     print("[OK] 合法工具参数验证通过")
 
     try:
@@ -102,6 +120,30 @@ def check_tool_validation(module) -> None:
         print("[OK] 非法地点被正确拒绝")
     else:
         fail("非法地点未被拒绝")
+
+    try:
+        module.validate_tool_call(
+            "scout_move_control", {"command": "jump 1"}, skill_catalog
+        )
+    except ValueError:
+        print("[OK] 非法动作被正确拒绝")
+    else:
+        fail("非法动作未被拒绝")
+
+
+def check_confirmation_policy(module) -> None:
+    config = module.load_agent_config(CONFIG_PATH)
+    skill_catalog = module.build_skill_catalog(config, module.load_waypoint_names())
+
+    if module.should_confirm_action("scout_navigation_manager", {"target": "接待区"}, skill_catalog) is not True:
+        fail("导航动作应进入确认流程")
+    if module.should_confirm_action("scout_move_control", {"command": "stop 0.5"}, skill_catalog) is not False:
+        fail("stop 应可直接执行")
+    if module.should_confirm_action("scout_move_control", {"command": "forward 1"}, skill_catalog) is not False:
+        fail("简单短动作应可直接执行")
+    if module.should_confirm_action("scout_move_control", {"command": "forward 2"}, skill_catalog) is not True:
+        fail("长时动作应进入确认流程")
+    print("[OK] 确认策略通过")
 
 
 def check_message_normalization(module) -> None:
@@ -122,7 +164,8 @@ def main() -> None:
     check_config_structure(config)
     module = load_module(SCRIPT_PATH, "llm_agent_module")
     check_message_normalization(module)
-    check_tool_validation(module)
+    check_catalog_and_validation(module)
+    check_confirmation_policy(module)
     print("[OK] scout_main_agent 静态测试通过")
 
 

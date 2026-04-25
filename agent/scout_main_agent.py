@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -26,6 +27,7 @@ MOVE_CLIENT_REL_PATH = Path("skills") / "scout_move_control" / "scripts" / "move
 NAVIGATE_PATH = ROOT_DIR / NAVIGATE_REL_PATH
 MOVE_CLIENT_PATH = ROOT_DIR / MOVE_CLIENT_REL_PATH
 NAVIGATION_CONFIG_PATH = ROOT_DIR / "skills" / "scout_navigation_manager" / "config" / "navigation_position.yaml"
+MOVE_COMMAND_PATTERN = re.compile(r"^(forward|backward|left|right|stop)\s+(\d+(?:\.\d+)?)$")
 
 
 def ensure_stdout_encoding() -> None:
@@ -98,45 +100,101 @@ def get_env_value(primary_name: str | None, fallback_names: list[str] | None = N
     return default
 
 
+def _normalize_lines(values: Any) -> list[str]:
+    if isinstance(values, str):
+        return [values.strip()] if values.strip() else []
+    if not isinstance(values, list):
+        return []
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
 def build_skill_catalog(config: dict[str, Any], waypoint_names: list[str]) -> dict[str, dict[str, Any]]:
-    skills = {}
+    skills: dict[str, dict[str, Any]] = {}
+    agent_cfg = config.get("agent") or {}
+    confirmation_policy = dict(agent_cfg.get("confirmation_policy") or {})
+
     for name, payload in (config.get("skills") or {}).items():
         if not payload.get("enabled", True):
             continue
-        skills[name] = {
+
+        skill_payload = {
             "description": str(payload.get("description", "")).strip(),
             "arguments": dict(payload.get("arguments") or {}),
+            "examples": _normalize_lines(payload.get("examples")),
+            "capabilities": _normalize_lines(payload.get("capabilities")),
+            "query_keywords": _normalize_lines(payload.get("query_keywords")),
+            "risk_level": str(payload.get("risk_level", "high")).strip().lower() or "high",
+            "status_supported": bool(payload.get("status_supported", False)),
+            "confirmation_policy": confirmation_policy,
         }
-    if "scout_navigation_manager" in skills:
-        skills["scout_navigation_manager"]["available_waypoints"] = waypoint_names
+        if name == "scout_navigation_manager":
+            skill_payload["available_waypoints"] = waypoint_names
+        skills[name] = skill_payload
     return skills
 
 
-def build_system_prompt(skill_catalog: dict[str, dict[str, Any]], max_actions: int) -> str:
-    skill_lines = []
+def format_skill_catalog_for_prompt(skill_catalog: dict[str, dict[str, Any]]) -> str:
+    lines = []
     for name, payload in skill_catalog.items():
-        line = f"- {name}: {payload.get('description', '')}"
-        waypoints = payload.get("available_waypoints")
+        lines.append(f"- {name}: {payload.get('description', '')}")
+        capabilities = payload.get("capabilities") or []
+        if capabilities:
+            lines.append("  能力: " + "；".join(capabilities))
+        arguments = payload.get("arguments") or {}
+        if arguments:
+            arg_text = "；".join(f"{arg}: {desc}" for arg, desc in arguments.items())
+            lines.append(f"  参数: {arg_text}")
+        examples = payload.get("examples") or []
+        if examples:
+            lines.append("  示例: " + "；".join(examples))
+        waypoints = payload.get("available_waypoints") or []
         if waypoints:
-            line += f" 可用地点: {', '.join(waypoints)}."
-        skill_lines.append(line)
+            lines.append("  可用地点: " + "、".join(waypoints))
+        lines.append(f"  风险等级: {payload.get('risk_level', 'high')}")
+    return "\n".join(lines)
 
-    skill_block = "\n".join(skill_lines)
+
+def format_capability_overview(skill_catalog: dict[str, dict[str, Any]]) -> str:
+    lines = ["当前已启用 skills："]
+    for name, payload in skill_catalog.items():
+        lines.append(f"- {name}: {payload.get('description', '')}")
+        capabilities = payload.get("capabilities") or []
+        if capabilities:
+            lines.append("  可执行操作: " + "；".join(capabilities))
+        arguments = payload.get("arguments") or {}
+        if arguments:
+            lines.append("  参数说明: " + "；".join(f"{arg}={desc}" for arg, desc in arguments.items()))
+        examples = payload.get("examples") or []
+        if examples:
+            lines.append("  示例: " + "；".join(examples))
+        waypoints = payload.get("available_waypoints") or []
+        if waypoints:
+            lines.append("  导航地点: " + "、".join(waypoints))
+    return "\n".join(lines)
+
+
+def list_skills(skill_catalog: dict[str, dict[str, Any]]) -> None:
+    print(format_capability_overview(skill_catalog))
+
+
+def build_system_prompt(skill_catalog: dict[str, dict[str, Any]], max_actions: int) -> str:
+    catalog_text = format_skill_catalog_for_prompt(skill_catalog)
     return textwrap.dedent(
         f"""
         你是 openclaw_lab_adapter 的主智能体。你的任务是根据用户自然语言请求决定是否调用本地技能。
         你只能使用下面列出的工具，不能虚构新的工具。
         最多调用 {max_actions} 次工具，按顺序执行。
 
-        可用工具:
-        {skill_block}
+        当前技能目录:
+        {catalog_text}
 
         规则:
-        1. 如果用户是去某个地点，优先调用 scout_navigation_manager。
-        2. 如果用户是底盘动作，调用 scout_move_control。
-        3. command 必须保持英文动作格式，例如 forward 1, left 1。
-        4. target 必须是可用地点中的一个标准地点名。
-        5. 如果请求超出已知能力，不要调用工具，直接用中文简短说明当前无法执行。
+        1. 查询能力、参数说明、地点列表、最近状态时，不要调用工具，直接用中文回答。
+        2. 导航类请求优先调用 scout_navigation_manager。
+        3. 底盘动作请求调用 scout_move_control。
+        4. command 必须是英文动作字符串，支持单条或逗号分隔的动作序列，例如 `forward 1` 或 `forward 1, left 1`。
+        5. target 必须是可用地点中的标准地点名。
+        6. 如果请求超出已知能力，不要调用工具，直接用中文简短说明当前无法执行。
         """
     ).strip()
 
@@ -162,12 +220,20 @@ def build_tools(skill_catalog: dict[str, dict[str, Any]]) -> list[dict[str, Any]
             properties[arg_name] = arg_schema
             required.append(arg_name)
 
+        description_parts = [payload.get("description", "")]
+        capabilities = payload.get("capabilities") or []
+        if capabilities:
+            description_parts.append("能力: " + "；".join(capabilities))
+        examples = payload.get("examples") or []
+        if examples:
+            description_parts.append("示例: " + "；".join(examples))
+
         tools.append(
             {
                 "type": "function",
                 "function": {
                     "name": skill_name,
-                    "description": payload.get("description", ""),
+                    "description": " ".join(part for part in description_parts if part),
                     "parameters": {
                         "type": "object",
                         "properties": properties,
@@ -178,6 +244,31 @@ def build_tools(skill_catalog: dict[str, dict[str, Any]]) -> list[dict[str, Any]
             }
         )
     return tools
+
+
+def split_move_command_segments(command: str) -> list[dict[str, Any]]:
+    segments = []
+    for raw_segment in str(command).split(","):
+        segment = raw_segment.strip()
+        if not segment:
+            continue
+        match = MOVE_COMMAND_PATTERN.fullmatch(segment)
+        if match is None:
+            raise ValueError(f"invalid move command segment: {segment}")
+        action = match.group(1)
+        duration = float(match.group(2))
+        if duration <= 0:
+            raise ValueError(f"move duration must be positive: {segment}")
+        segments.append(
+            {
+                "raw": segment,
+                "action": action,
+                "duration": duration,
+            }
+        )
+    if not segments:
+        raise ValueError("move command is empty")
+    return segments
 
 
 def validate_tool_call(skill_name: str, arguments: dict[str, Any], skill_catalog: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -197,11 +288,61 @@ def validate_tool_call(skill_name: str, arguments: dict[str, Any], skill_catalog
 
     if skill_name == "scout_move_control":
         command = str(arguments.get("command", "")).strip()
-        if not command:
-            raise ValueError("move command is empty")
+        split_move_command_segments(command)
         return {"command": command}
 
     raise ValueError(f"no validator for skill: {skill_name}")
+
+
+def get_confirmation_policy(config: dict[str, Any]) -> dict[str, Any]:
+    policy = dict(((config.get("agent") or {}).get("confirmation_policy")) or {})
+    return {
+        "simple_move_max_seconds": float(policy.get("simple_move_max_seconds", 1.0)),
+        "always_confirm_navigation": bool(policy.get("always_confirm_navigation", True)),
+        "always_confirm_multi_step_move": bool(policy.get("always_confirm_multi_step_move", True)),
+        "direct_actions": _normalize_lines(policy.get("direct_actions")) or ["stop"],
+    }
+
+
+def should_confirm_action(
+    skill_name: str,
+    arguments: dict[str, Any],
+    skill_catalog: dict[str, dict[str, Any]],
+) -> bool:
+    payload = skill_catalog.get(skill_name) or {}
+    policy = dict(payload.get("confirmation_policy") or {})
+    risk_level = str(payload.get("risk_level", "high")).lower()
+
+    if skill_name == "scout_navigation_manager":
+        return bool(policy.get("always_confirm_navigation", True))
+
+    if skill_name != "scout_move_control":
+        return risk_level != "low"
+
+    direct_actions = set(_normalize_lines(policy.get("direct_actions")) or ["stop"])
+    segments = split_move_command_segments(str(arguments.get("command", "")))
+    if len(segments) > 1 and bool(policy.get("always_confirm_multi_step_move", True)):
+        return True
+
+    if len(segments) != 1:
+        return risk_level != "low"
+
+    segment = segments[0]
+    if segment["action"] in direct_actions:
+        return False
+
+    max_seconds = float(policy.get("simple_move_max_seconds", 1.0))
+    if segment["duration"] <= max_seconds and risk_level == "low":
+        return False
+    return True
+
+
+def summarize_action(skill_name: str, arguments: dict[str, Any]) -> str:
+    if skill_name == "scout_navigation_manager":
+        return f"导航到{arguments['target']}"
+    if skill_name == "scout_move_control":
+        return f"执行底盘动作 {arguments['command']}"
+    return f"执行 {skill_name}"
 
 
 def call_chat_completion(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
@@ -241,6 +382,18 @@ def call_chat_completion(payload: dict[str, Any], config: dict[str, Any]) -> dic
 
 
 def execute_action(skill_name: str, arguments: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
+    command, script_path, script_rel_path = build_execution_command(skill_name, arguments)
+    return run_skill_command(
+        skill_name,
+        command,
+        script_path,
+        script_rel_path,
+        arguments,
+        dry_run=dry_run,
+    )
+
+
+def build_execution_command(skill_name: str, arguments: dict[str, Any]) -> tuple[list[str], Path, Path]:
     if skill_name == "scout_navigation_manager":
         script_path = NAVIGATE_PATH
         script_rel_path = NAVIGATE_REL_PATH
@@ -252,6 +405,18 @@ def execute_action(skill_name: str, arguments: dict[str, Any], dry_run: bool = F
     else:
         raise ValueError(f"unsupported execution skill: {skill_name}")
 
+    return command, script_path, script_rel_path
+
+
+def run_skill_command(
+    skill_name: str,
+    command: list[str],
+    script_path: Path,
+    script_rel_path: Path,
+    arguments: dict[str, Any],
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    del script_rel_path
     if not script_path.exists():
         raise FileNotFoundError(f"skill script not found: {script_path}")
 
@@ -284,9 +449,26 @@ def execute_action(skill_name: str, arguments: dict[str, Any], dry_run: bool = F
     }
 
 
-def list_skills(skill_catalog: dict[str, dict[str, Any]]) -> None:
-    for name, payload in skill_catalog.items():
-        print(f"{name}: {payload.get('description', '')}")
+def query_skill_status(skill_name: str, dry_run: bool = False) -> dict[str, Any]:
+    if skill_name == "scout_navigation_manager":
+        script_path = NAVIGATE_PATH
+        script_rel_path = NAVIGATE_REL_PATH
+        command = [sys.executable, str(script_rel_path), "--status"]
+    elif skill_name == "scout_move_control":
+        script_path = MOVE_CLIENT_PATH
+        script_rel_path = MOVE_CLIENT_REL_PATH
+        command = [sys.executable, str(script_rel_path), "--status"]
+    else:
+        raise ValueError(f"unsupported status skill: {skill_name}")
+
+    return run_skill_command(
+        skill_name,
+        command,
+        script_path,
+        script_rel_path,
+        {"query": "status"},
+        dry_run=dry_run,
+    )
 
 
 def normalize_message(raw_message: dict[str, Any]) -> dict[str, Any]:
@@ -363,6 +545,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_agent_config()
+    config.setdefault("agent", {})
+    config["agent"].setdefault("confirmation_policy", get_confirmation_policy(config))
     skill_catalog = build_skill_catalog(config, load_waypoint_names())
 
     if args.list_skills:

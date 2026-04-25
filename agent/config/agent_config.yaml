@@ -12,15 +12,54 @@ llm:
 
 agent:
   max_actions: 3
+  confirmation_policy:
+    always_confirm_navigation: true
+    always_confirm_multi_step_move: true
+    simple_move_max_seconds: 1.0
+    direct_actions:
+      - stop
 
 skills:
   scout_navigation_manager:
     enabled: true
-    description: "将用户的地点类自然语言映射到 1201 地图中的命名导航点，并调用导航客户端发送目标。"
+    description: "将地点类自然语言映射到命名导航点，并调用导航客户端发送目标。"
+    capabilities:
+      - "命名地点导航"
+      - "列出当前可到达地点"
+      - "说明导航 target 参数含义"
+    query_keywords:
+      - "导航"
+      - "地点"
+      - "去哪"
+      - "waypoint"
+    examples:
+      - "带我去前台"
+      - "去实验台"
+      - "有哪些可到达地点"
+    risk_level: high
+    status_supported: true
     arguments:
       target: "命名点名称，例如 原点、接待区、实验台、物料区、巡检点A"
+
   scout_move_control:
     enabled: true
     description: "将简短运动意图转换为底盘动作命令，并调用移动控制客户端下发字符串命令。"
+    capabilities:
+      - "前进、后退、左转、右转、停止"
+      - "支持 command 参数为单条或逗号分隔动作串"
+      - "说明动作命令格式与执行约束"
+    query_keywords:
+      - "移动"
+      - "底盘"
+      - "前进"
+      - "停止"
+      - "move"
+    examples:
+      - "前进1秒"
+      - "左转0.5秒"
+      - "停止"
+      - "前进1秒，然后左转1秒"
+    risk_level: low
+    status_supported: true
     arguments:
       command: "动作命令字符串，例如 forward 1, left 1, stop 0.5"
