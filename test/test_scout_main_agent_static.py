@@ -93,10 +93,11 @@ def check_catalog_and_validation(module) -> None:
         fail("工具定义生成失败")
     print("[OK] 工具定义生成通过")
 
+    nav_target = "工位2"
     nav_args = module.validate_tool_call(
-        "scout_navigation_manager", {"target": "接待区"}, skill_catalog
+        "scout_navigation_manager", {"target": nav_target}, skill_catalog
     )
-    if nav_args["target"] != "接待区":
+    if nav_args["target"] != nav_target:
         fail("合法导航工具参数验证失败")
 
     move_args = module.validate_tool_call(
@@ -135,7 +136,7 @@ def check_confirmation_policy(module) -> None:
     config = module.load_agent_config(CONFIG_PATH)
     skill_catalog = module.build_skill_catalog(config, module.load_waypoint_names())
 
-    if module.should_confirm_action("scout_navigation_manager", {"target": "接待区"}, skill_catalog) is not True:
+    if module.should_confirm_action("scout_navigation_manager", {"target": "工位2"}, skill_catalog) is not True:
         fail("导航动作应进入确认流程")
     if module.should_confirm_action("scout_move_control", {"command": "stop 0.5"}, skill_catalog) is not False:
         fail("stop 应可直接执行")

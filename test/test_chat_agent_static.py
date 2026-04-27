@@ -133,11 +133,11 @@ def check_confirmation_and_execution(module) -> None:
         module,
         [
             make_llm_response(
-                tool_calls=[tool_call("call_nav", "scout_navigation_manager", {"target": "接待区"})]
+                tool_calls=[tool_call("call_nav", "scout_navigation_manager", {"target": "工位2"})]
             )
         ],
     )
-    nav = module.handle_chat_turn("带我去前台", [], state, None, skill_catalog, config, dry_run=True)
+    nav = module.handle_chat_turn("带我去工位2", [], state, None, skill_catalog, config, dry_run=True)
     if "待执行操作" not in nav["assistant_reply"]:
         fail("导航请求未进入待确认流程")
     if "[Dry Run 调度日志]" not in nav["assistant_reply"] or "LLM输出:" not in nav["assistant_reply"]:
@@ -145,12 +145,12 @@ def check_confirmation_and_execution(module) -> None:
     if "参数校验:" not in nav["assistant_reply"] or "执行命令:" not in nav["assistant_reply"] or "确认策略:" not in nav["assistant_reply"]:
         fail("导航 dry-run 未按四段式展示")
     pending = nav.get("pending_intent")
-    if pending is None or pending.actions[0].arguments.get("target") != "接待区":
+    if pending is None or pending.actions[0].arguments.get("target") != "工位2":
         fail("导航待确认目标解析失败")
 
-    install_fake_llm(module, [make_llm_response(content="好的，正在前往接待区。")])
+    install_fake_llm(module, [make_llm_response(content="好的，正在前往工位2。")])
     confirmed_nav = module.handle_chat_turn("确认", [], state, pending, skill_catalog, config, dry_run=True)
-    if "正在前往接待区" not in confirmed_nav["assistant_reply"]:
+    if "正在前往工位2" not in confirmed_nav["assistant_reply"]:
         fail("导航确认执行回复不符合预期")
     if "validated_arguments:" not in confirmed_nav["assistant_reply"]:
         fail("导航确认后的 dry-run 未保留调度信息")

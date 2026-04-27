@@ -13,7 +13,7 @@
 
 ## 当前阶段
 
-第一阶段先提供两项基础能力，并增加一个项目级主智能体入口：
+第一阶段已经完成两项基础 skills 的整理，并合入项目级 agent 原型：
 
 - `scout_move_control`
   - 自然语言风格的底盘动作封装
@@ -23,17 +23,28 @@
   - 命名地点导航
   - 当前底层默认对接 ROS1 `move_base`
   - 使用 YAML 管理 waypoint
+
+项目级 agent 入口：
+
 - `scout_main_agent`
   - 作为项目主进程接入 Kimi 官方兼容 API
   - 负责将自然语言路由为本地 skills 调用
   - 当前支持调度 `scout_navigation_manager` 和 `scout_move_control`
-  - 基于工具调用循环串行执行，适合作为 demo 智能体入口
+  - 不属于 `skills/` 目录下的独立 skill，而是适合作为 demo 的智能体入口
+- `chat_agent`
+  - 提供交互式命令行调试入口
+  - 支持能力清单展示、dry-run 调度和执行前确认
+
+本阶段同步补充了 agent 配置文件、调试文档和静态测试脚本，用于验证自然语言到本地 skill 的路由、参数校验和执行策略。
 
 ## 目录结构
 
 ```text
 openclaw_lab_adapter/
-├── docs/                         # 项目说明与适配文档
+├── docs/                         # 项目说明、设计计划、调试记录与图片
+│   ├── debug/                    # 调试文档、坐标记录、启动排查
+│   ├── design/                   # 方案设计、项目范围、skill 拆解
+│   └── images/                   # 文档图片统一存放
 ├── agent/                        # 项目级主智能体入口
 ├── ros1_bridge/                  # ROS1 自定义消息/服务与桥接层
 ├── skills/                       # OpenClaw skills

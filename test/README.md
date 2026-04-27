@@ -35,3 +35,18 @@ python test/test_scout_main_agent_static.py
 - Kimi/OpenAI 兼容工具定义是否能正确生成
 - 工具参数校验是否能接受合法 skill 调用
 - 非法地点是否会被正确拒绝
+
+## chat_agent 静态测试
+
+在项目根目录执行：
+
+```bash
+python test/test_chat_agent_static.py
+```
+
+这个脚本会自动检查：
+
+- `agent/chat_agent.py` 是否存在
+- 常见中文动作命令是否能转换为底盘 command
+- 常见导航短句是否能解析到已有命名点
+- 未知地点、能力查询、超范围请求是否返回预期文本
