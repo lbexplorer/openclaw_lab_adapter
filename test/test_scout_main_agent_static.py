@@ -132,6 +132,50 @@ def check_catalog_and_validation(module) -> None:
         fail("非法动作未被拒绝")
 
 
+def check_skill_protocol(module) -> None:
+    result = module.normalize_process_result(
+        skill_name="scout_navigation_manager",
+        operation="execute",
+        arguments={"target": "工位2"},
+        command=["python", "navigate.py", "--go", "工位2"],
+        returncode=0,
+        stdout="success=True resolved=工位2 message=true",
+        stderr="",
+    )
+    if result.get("status") != module.skill_protocol.SkillStatus.ACCEPTED:
+        fail("导航下发成功应归一化为 accepted，而不是 success")
+    if result.get("execution_mode") != module.skill_protocol.ExecutionMode.ASYNC:
+        fail("导航执行模式应为 async")
+    for key in ["skill", "status", "execution_mode", "message", "data", "error", "trace"]:
+        if key not in result:
+            fail(f"SkillResult 缺少字段: {key}")
+
+    failed = module.normalize_process_result(
+        skill_name="scout_navigation_manager",
+        operation="execute",
+        arguments={"target": "火星基地"},
+        command=["python", "navigate.py", "--go", "火星基地"],
+        returncode=2,
+        stdout="unknown waypoint: 火星基地",
+        stderr="",
+    )
+    if failed.get("status") != module.skill_protocol.SkillStatus.INVALID_INPUT:
+        fail("非法导航目标应归一化为 invalid_input")
+
+    status_result = module.normalize_process_result(
+        skill_name="scout_navigation_manager",
+        operation="status",
+        arguments={"query": "status"},
+        command=["python", "navigate.py", "--status"],
+        returncode=0,
+        stdout="moving to 工位2",
+        stderr="",
+    )
+    if status_result.get("status") != module.skill_protocol.SkillStatus.RUNNING:
+        fail("moving to 状态应归一化为 running")
+    print("[OK] SkillResult 协议归一化通过")
+
+
 def check_confirmation_policy(module) -> None:
     config = module.load_agent_config(CONFIG_PATH)
     skill_catalog = module.build_skill_catalog(config, module.load_waypoint_names())
@@ -166,6 +210,7 @@ def main() -> None:
     module = load_module(SCRIPT_PATH, "llm_agent_module")
     check_message_normalization(module)
     check_catalog_and_validation(module)
+    check_skill_protocol(module)
     check_confirmation_policy(module)
     print("[OK] scout_main_agent 静态测试通过")
 

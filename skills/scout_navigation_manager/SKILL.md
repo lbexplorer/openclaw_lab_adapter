@@ -17,7 +17,7 @@ description: "Scout 风格命名地点导航 skill。通过 1201 地图基准下
 
 | Topic | 类型 | 方向 | 说明 |
 |-------|------|------|------|
-| `/scout_navigation_manager/goal_dispatched` | `std_msgs/String` | 服务端发布 | 导航目标派发时发布坐标，格式：`[地点名] x=X.XXX y=Y.YYY yaw=YAW.X` |
+| `/scout_navigation_manager/goal_dispatched` | `std_msgs/String` | 服务端发布 | 导航目标派发时发布坐标，格式包含地点名、position 和 orientation |
 
 ## 状态
 
@@ -36,7 +36,8 @@ description: "Scout 风格命名地点导航 skill。通过 1201 地图基准下
 - 地点配置文件: `skills/scout_navigation_manager/config/navigation_position.yaml`
 - 默认基准地图: `sailors_onboard-main` 中的 `scout_launch/maps/1201.yaml`
 - 支持字段:
-  - `x / y / yaw`: `map` 坐标系目标位姿
+  - `x / y`: `map` 坐标系目标位置
+  - `orientation.x / orientation.y / orientation.z / orientation.w`: `map` 坐标系目标朝向四元数
   - `description`: 地点说明
   - `aliases`: 自然语言别名，例如“去前台”“带我去仓库”
 

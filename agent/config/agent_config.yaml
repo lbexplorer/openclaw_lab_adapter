@@ -12,6 +12,8 @@ llm:
 
 agent:
   max_actions: 3
+  async_result_timeout_seconds: 10
+  async_result_poll_seconds: 1
   confirmation_policy:
     always_confirm_navigation: true
     always_confirm_multi_step_move: true

@@ -14,7 +14,7 @@ python test/test_scout_navigation_static.py
 
 - `skills/scout_navigation_manager/scripts/` 下脚本是否存在
 - `navigation_position.yaml` 是否存在、结构是否正确
-- 每个地点是否包含 `x / y / yaw`
+- 每个地点是否包含 `x / y / orientation.x/y/z/w`
 - `aliases` 是否是字符串列表
 - 自然语言短句是否能解析到预期标准地点名
 

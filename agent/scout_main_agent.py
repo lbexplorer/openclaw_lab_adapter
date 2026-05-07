@@ -19,6 +19,11 @@ import yaml
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from skills import skill_protocol
+
 AGENT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = AGENT_DIR / "config" / "agent_config.yaml"
 ENV_PATH = ROOT_DIR / ".env"
@@ -156,20 +161,27 @@ def format_skill_catalog_for_prompt(skill_catalog: dict[str, dict[str, Any]]) ->
 
 def format_capability_overview(skill_catalog: dict[str, dict[str, Any]]) -> str:
     lines = ["当前已启用 skills："]
-    for name, payload in skill_catalog.items():
-        lines.append(f"- {name}: {payload.get('description', '')}")
+    for index, (name, payload) in enumerate(skill_catalog.items(), start=1):
+        lines.extend(["", f"[{index}] {name}"])
+        description = payload.get("description", "")
+        if description:
+            lines.append(f"  说明：{description}")
         capabilities = payload.get("capabilities") or []
         if capabilities:
-            lines.append("  可执行操作: " + "；".join(capabilities))
+            lines.append("  可执行操作：")
+            lines.extend(f"    - {capability}" for capability in capabilities)
         arguments = payload.get("arguments") or {}
         if arguments:
-            lines.append("  参数说明: " + "；".join(f"{arg}={desc}" for arg, desc in arguments.items()))
+            lines.append("  参数说明：")
+            lines.extend(f"    {arg}：{desc}" for arg, desc in arguments.items())
         examples = payload.get("examples") or []
         if examples:
-            lines.append("  示例: " + "；".join(examples))
+            lines.append("  示例：")
+            lines.extend(f"    {example}" for example in examples)
         waypoints = payload.get("available_waypoints") or []
         if waypoints:
-            lines.append("  导航地点: " + "、".join(waypoints))
+            lines.append("  导航点：")
+            lines.append("    " + "、".join(waypoints))
     return "\n".join(lines)
 
 
@@ -390,6 +402,7 @@ def execute_action(skill_name: str, arguments: dict[str, Any], dry_run: bool = F
         script_rel_path,
         arguments,
         dry_run=dry_run,
+        operation="execute",
     )
 
 
@@ -415,19 +428,29 @@ def run_skill_command(
     script_rel_path: Path,
     arguments: dict[str, Any],
     dry_run: bool = False,
+    operation: str = "execute",
 ) -> dict[str, Any]:
     del script_rel_path
     if not script_path.exists():
-        raise FileNotFoundError(f"skill script not found: {script_path}")
+        return skill_protocol.make_result(
+            skill=skill_name,
+            status=skill_protocol.SkillStatus.UNAVAILABLE,
+            execution_mode=get_execution_mode(skill_name, operation),
+            message=f"skill script not found: {script_path}",
+            error_code="SKILL_SCRIPT_NOT_FOUND",
+            error_message=f"skill script not found: {script_path}",
+            trace={"command": command, "cwd": str(ROOT_DIR)},
+        )
 
     if dry_run:
-        return {
-            "skill": skill_name,
-            "status": "dry_run",
-            "command": command,
-            "arguments": arguments,
-            "cwd": str(ROOT_DIR),
-        }
+        return skill_protocol.make_result(
+            skill=skill_name,
+            status=skill_protocol.SkillStatus.ACCEPTED,
+            execution_mode=get_execution_mode(skill_name, operation),
+            message="dry-run: skill command validated but not executed.",
+            data={"arguments": arguments, "dry_run": True},
+            trace={"command": command, "cwd": str(ROOT_DIR)},
+        )
 
     completed = subprocess.run(
         command,
@@ -436,17 +459,113 @@ def run_skill_command(
         text=True,
         check=False,
     )
-    status = "ok" if completed.returncode == 0 else "error"
-    return {
-        "skill": skill_name,
-        "status": status,
-        "arguments": arguments,
+    return normalize_process_result(
+        skill_name=skill_name,
+        operation=operation,
+        arguments=arguments,
+        command=command,
+        returncode=completed.returncode,
+        stdout=completed.stdout.strip(),
+        stderr=completed.stderr.strip(),
+    )
+
+
+def get_execution_mode(skill_name: str, operation: str) -> str:
+    if operation == "status":
+        return skill_protocol.ExecutionMode.SYNC
+    if skill_name in {"scout_navigation_manager", "scout_move_control"}:
+        return skill_protocol.ExecutionMode.ASYNC
+    return skill_protocol.ExecutionMode.SYNC
+
+
+def normalize_process_result(
+    skill_name: str,
+    operation: str,
+    arguments: dict[str, Any],
+    command: list[str],
+    returncode: int,
+    stdout: str,
+    stderr: str,
+) -> dict[str, Any]:
+    trace = {
         "command": command,
         "cwd": str(ROOT_DIR),
-        "returncode": completed.returncode,
-        "stdout": completed.stdout.strip(),
-        "stderr": completed.stderr.strip(),
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
     }
+    execution_mode = get_execution_mode(skill_name, operation)
+
+    if returncode != 0:
+        status, code, detail = skill_protocol.classify_process_failure(returncode, stdout, stderr)
+        return skill_protocol.make_result(
+            skill=skill_name,
+            status=status,
+            execution_mode=execution_mode,
+            message=detail,
+            data={"arguments": arguments},
+            error_code=code,
+            error_message=detail,
+            trace=trace,
+        )
+
+    if operation == "status":
+        raw_status = stdout.strip()
+        if skill_name == "scout_navigation_manager":
+            status, message = skill_protocol.status_from_navigation_status(raw_status)
+        elif skill_name == "scout_move_control":
+            status, message = skill_protocol.status_from_move_status(raw_status)
+        else:
+            status, message = skill_protocol.SkillStatus.SUCCESS, "skill status query succeeded."
+        return skill_protocol.make_result(
+            skill=skill_name,
+            status=status,
+            execution_mode=execution_mode,
+            message=message,
+            data={"arguments": arguments, "raw_status": raw_status},
+            trace=trace,
+        )
+
+    if skill_name == "scout_navigation_manager":
+        lowered = stdout.lower()
+        if "success=false" in lowered:
+            return skill_protocol.make_result(
+                skill=skill_name,
+                status=skill_protocol.SkillStatus.FAILED,
+                execution_mode=execution_mode,
+                message=stdout or "navigation goal was rejected.",
+                data={"arguments": arguments},
+                error_code="NAVIGATION_REJECTED",
+                error_message=stdout or "navigation goal was rejected.",
+                trace=trace,
+            )
+        return skill_protocol.make_result(
+            skill=skill_name,
+            status=skill_protocol.SkillStatus.ACCEPTED,
+            execution_mode=execution_mode,
+            message="导航目标已被服务接收，正在等待执行结果。",
+            data={"arguments": arguments, "raw_output": stdout},
+            trace=trace,
+        )
+
+    if skill_name == "scout_move_control":
+        return skill_protocol.make_result(
+            skill=skill_name,
+            status=skill_protocol.SkillStatus.ACCEPTED,
+            execution_mode=execution_mode,
+            message="底盘动作指令已发送，正在等待执行结果。",
+            data={"arguments": arguments, "raw_output": stdout},
+            trace=trace,
+        )
+
+    return skill_protocol.make_result(
+        skill=skill_name,
+        status=skill_protocol.SkillStatus.SUCCESS,
+        execution_mode=execution_mode,
+        message=stdout or "skill executed successfully.",
+        data={"arguments": arguments},
+        trace=trace,
+    )
 
 
 def query_skill_status(skill_name: str, dry_run: bool = False) -> dict[str, Any]:
@@ -468,6 +587,7 @@ def query_skill_status(skill_name: str, dry_run: bool = False) -> dict[str, Any]
         script_rel_path,
         {"query": "status"},
         dry_run=dry_run,
+        operation="status",
     )
 
 
