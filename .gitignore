@@ -38,6 +38,8 @@ devel/
 install/
 build/
 log/
+!docs/log/
+!docs/log/*.md
 *.bag
 *.rviz
 

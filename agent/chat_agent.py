@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import textwrap
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -84,7 +85,9 @@ def build_startup_banner(skill_catalog: dict[str, dict[str, Any]]) -> str:
     return "\n".join(
         [
             "Scout Chat Agent 已启动，当前进入 LLM skills 调度会话。",
+            "",
             core.format_capability_overview(skill_catalog),
+            "",
             "你可以直接输入“带我去前台”“前进1秒”“停止”或“你能做什么”。",
             "输入 退出 / exit 可结束会话。",
         ]
@@ -302,14 +305,16 @@ def service_start_hint(skill_name: str) -> str:
 
 
 def is_status_ready(result: dict[str, Any]) -> bool:
-    if result.get("status") == "dry_run":
+    if result.get("data", {}).get("dry_run"):
         return True
-    if result.get("status") != "ok":
+    if result.get("status") != core.skill_protocol.SkillStatus.SUCCESS:
         return False
-    if result.get("returncode") not in (None, 0):
-        return False
-    stdout = (result.get("stdout") or "").strip()
-    return bool(stdout)
+    raw_status = str(result.get("data", {}).get("raw_status", "")).strip().lower()
+    if result.get("skill") == "scout_navigation_manager":
+        return raw_status in {"ready", "finish"}
+    if result.get("skill") == "scout_move_control":
+        return raw_status == "stop"
+    return True
 
 
 def update_robot_state_for_action(state: RobotState, action: PlannedSkillCall) -> RobotState:
@@ -355,14 +360,100 @@ def build_execution_fallback_reply(executed_results: list[dict[str, Any]]) -> st
     if not executed_results:
         return "这轮没有执行任何 skill。"
     result = executed_results[-1]
-    if result.get("status") in {"ok", "dry_run"}:
-        skill_name = result.get("skill")
+    status = result.get("status")
+    skill_name = result.get("skill")
+    arguments = result.get("data", {}).get("arguments", {})
+    message = (result.get("message") or "").strip()
+    if status == core.skill_protocol.SkillStatus.SUCCESS:
         if skill_name == "scout_navigation_manager":
-            return f"好的，已处理导航请求，目标是 {result.get('arguments', {}).get('target', '')}。"
+            return f"导航任务已完成，目标是 {arguments.get('target', '')}。"
         if skill_name == "scout_move_control":
-            return f"好的，已处理底盘动作：{result.get('arguments', {}).get('command', '')}。"
-    detail = (result.get("stderr") or result.get("stdout") or "执行失败").strip()
+            return f"底盘动作已完成：{arguments.get('command', '')}。"
+        return message or "skill 已成功完成。"
+    if status in {core.skill_protocol.SkillStatus.ACCEPTED, core.skill_protocol.SkillStatus.RUNNING}:
+        return message or "skill 已接收，仍在执行中。"
+    detail = message or (result.get("error") or {}).get("message") or "执行失败"
     return f"我尝试执行了请求，但没有成功：{detail}"
+
+
+def get_async_wait_config(config: dict[str, Any]) -> tuple[float, float]:
+    agent_cfg = config.get("agent") or {}
+    timeout_seconds = float(agent_cfg.get("async_result_timeout_seconds", 10))
+    poll_seconds = float(agent_cfg.get("async_result_poll_seconds", 1))
+    return max(timeout_seconds, 0.0), max(poll_seconds, 0.1)
+
+
+def wait_for_async_completion(
+    action: PlannedSkillCall,
+    initial_result: dict[str, Any],
+    config: dict[str, Any],
+    dry_run: bool,
+) -> dict[str, Any]:
+    if dry_run:
+        return initial_result
+    if initial_result.get("execution_mode") != core.skill_protocol.ExecutionMode.ASYNC:
+        return initial_result
+    if not core.skill_protocol.is_non_terminal_progress(initial_result):
+        return initial_result
+
+    timeout_seconds, poll_seconds = get_async_wait_config(config)
+    deadline = time.time() + timeout_seconds
+    last_status = initial_result
+    while time.time() < deadline:
+        time.sleep(min(poll_seconds, max(deadline - time.time(), 0.0)))
+        status_result = core.query_skill_status(action.skill_name, dry_run=False)
+        last_status = status_result
+        raw_status = str(status_result.get("data", {}).get("raw_status", "")).strip().lower()
+
+        if action.skill_name == "scout_navigation_manager":
+            if raw_status == "finish":
+                return core.skill_protocol.make_result(
+                    skill=action.skill_name,
+                    status=core.skill_protocol.SkillStatus.SUCCESS,
+                    execution_mode=core.skill_protocol.ExecutionMode.ASYNC,
+                    message="导航任务已完成。",
+                    data={"arguments": action.arguments, "raw_status": raw_status},
+                    trace=status_result.get("trace", {}),
+                )
+            if raw_status == "ready":
+                return core.skill_protocol.make_result(
+                    skill=action.skill_name,
+                    status=core.skill_protocol.SkillStatus.FAILED,
+                    execution_mode=core.skill_protocol.ExecutionMode.ASYNC,
+                    message="导航任务未完成，导航服务已回到 ready，可能被取消或执行失败。",
+                    data={"arguments": action.arguments, "raw_status": raw_status},
+                    error_code="NAVIGATION_NOT_FINISHED",
+                    error_message="navigation returned ready before finish",
+                    trace=status_result.get("trace", {}),
+                )
+
+        if action.skill_name == "scout_move_control" and raw_status == "stop":
+            return core.skill_protocol.make_result(
+                skill=action.skill_name,
+                status=core.skill_protocol.SkillStatus.SUCCESS,
+                execution_mode=core.skill_protocol.ExecutionMode.ASYNC,
+                message="底盘动作已完成。",
+                data={"arguments": action.arguments, "raw_status": raw_status},
+                trace=status_result.get("trace", {}),
+            )
+
+        if status_result.get("status") in {
+            core.skill_protocol.SkillStatus.FAILED,
+            core.skill_protocol.SkillStatus.UNAVAILABLE,
+            core.skill_protocol.SkillStatus.INVALID_INPUT,
+        }:
+            return status_result
+
+    return core.skill_protocol.make_result(
+        skill=action.skill_name,
+        status=core.skill_protocol.SkillStatus.TIMEOUT,
+        execution_mode=core.skill_protocol.ExecutionMode.ASYNC,
+        message=f"已等待 {timeout_seconds:g} 秒，skill 尚未返回完成结果。",
+        data={"arguments": action.arguments, "last_status": last_status.get("data", {}).get("raw_status", "")},
+        error_code="ASYNC_RESULT_TIMEOUT",
+        error_message="skill did not reach a terminal status before timeout",
+        trace=last_status.get("trace", {}),
+    )
 
 
 def execute_actions_with_guard(
@@ -397,9 +488,21 @@ def execute_actions_with_guard(
                 }
 
         result = core.execute_action(action.skill_name, action.arguments, dry_run=dry_run)
+        result = wait_for_async_completion(action, result, config, dry_run=dry_run)
         executed_results.append(result)
-        if result.get("status") not in {"ok", "dry_run"}:
-            detail = (result.get("stderr") or result.get("stdout") or "执行失败").strip()
+        if result.get("status") not in {
+            core.skill_protocol.SkillStatus.SUCCESS,
+            core.skill_protocol.SkillStatus.ACCEPTED,
+            core.skill_protocol.SkillStatus.RUNNING,
+        }:
+            detail = (result.get("message") or (result.get("error") or {}).get("message") or "执行失败").strip()
+            if result.get("status") == core.skill_protocol.SkillStatus.TIMEOUT:
+                return {
+                    "assistant_reply": append_debug_block(f"第 {index + 1} 个动作尚未完成：{detail}", debug_lines or [], dry_run),
+                    "updated_state": previous_state,
+                    "pending_intent": None,
+                    "executed_results": executed_results,
+                }
             return {
                 "assistant_reply": append_debug_block(f"我尝试执行第 {index + 1} 个动作时失败了：{detail}", debug_lines or [], dry_run),
                 "updated_state": previous_state,
@@ -407,7 +510,8 @@ def execute_actions_with_guard(
                 "executed_results": executed_results,
             }
 
-        working_state = update_robot_state_for_action(working_state, action)
+        if result.get("status") == core.skill_protocol.SkillStatus.SUCCESS:
+            working_state = update_robot_state_for_action(working_state, action)
         messages.append(
             {
                 "role": "tool",
@@ -621,7 +725,7 @@ def run_chat_loop(
 
     while True:
         try:
-            user_text = input("你：").strip()
+            user_text = input("\n你：").strip()
         except EOFError:
             print("\n助手：会话结束。")
             return 0

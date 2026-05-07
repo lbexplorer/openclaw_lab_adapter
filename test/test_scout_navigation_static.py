@@ -74,9 +74,17 @@ def check_yaml_structure(config: dict) -> None:
     for name, pose in positions.items():
         if not isinstance(pose, dict):
             fail(f"{name}: 配置不是字典")
-        for key in ["x", "y", "yaw"]:
+        for key in ["x", "y", "orientation"]:
             if key not in pose:
                 fail(f"{name}: 缺少 {key}")
+        orientation = pose["orientation"]
+        if not isinstance(orientation, dict):
+            fail(f"{name}: orientation 不是字典")
+        for key in ["x", "y", "z", "w"]:
+            if key not in orientation:
+                fail(f"{name}: orientation 缺少 {key}")
+            if not isinstance(orientation[key], (int, float)):
+                fail(f"{name}: orientation.{key} 不是数字")
         aliases = pose.get("aliases", [])
         if aliases is not None and not isinstance(aliases, list):
             fail(f"{name}: aliases 不是列表")
@@ -85,7 +93,8 @@ def check_yaml_structure(config: dict) -> None:
                 if not isinstance(alias, str):
                     fail(f"{name}: alias {alias!r} 不是字符串")
         print(
-            f"[OK] {name}: x={pose['x']}, y={pose['y']}, yaw={pose['yaw']}, aliases={len(aliases or [])}"
+            f"[OK] {name}: x={pose['x']}, y={pose['y']}, "
+            f"orientation={orientation}, aliases={len(aliases or [])}"
         )
 
 

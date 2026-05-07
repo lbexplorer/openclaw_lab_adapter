@@ -6,7 +6,6 @@
 """
 
 import argparse
-import math
 import os
 import re
 import threading
@@ -37,19 +36,6 @@ try:  # pragma: no cover
 except ImportError:  # pragma: no cover
     SetString = None
     SetStringResponse = None
-
-
-def quaternion_from_yaw_degrees(yaw_degrees):
-    """将偏航角（度）转换为四元数。
-
-    Args:
-        yaw_degrees (float): 偏航角，单位为度。
-
-    Returns:
-        tuple: 四元数 (x, y, z, w)。
-    """
-    half = math.radians(yaw_degrees) * 0.5
-    return (0.0, 0.0, math.sin(half), math.cos(half))
 
 
 def normalize_text(text):
@@ -87,6 +73,18 @@ def build_alias_candidates(name, aliases):
     return deduped
 
 
+def normalize_orientation(pose, name):
+    """读取配置中的完整四元数，避免从 yaw 二次换算。"""
+    orientation = pose.get("orientation")
+    if not isinstance(orientation, dict):
+        raise ValueError("%s: missing orientation x/y/z/w" % name)
+    required_keys = ("x", "y", "z", "w")
+    missing_keys = [key for key in required_keys if key not in orientation]
+    if missing_keys:
+        raise ValueError("%s: missing orientation field(s): %s" % (name, ", ".join(missing_keys)))
+    return {key: float(orientation[key]) for key in required_keys}
+
+
 def load_waypoints(path):
     """从YAML文件加载航点数据。
 
@@ -113,7 +111,7 @@ def load_waypoints(path):
         normalized_positions[name] = {
             "x": float(pose.get("x", 0.0)),
             "y": float(pose.get("y", 0.0)),
-            "yaw": float(pose.get("yaw", 0.0)),
+            "orientation": normalize_orientation(pose, name),
             "description": str(pose.get("description", "")).strip(),
             "aliases": aliases,
         }
@@ -319,21 +317,25 @@ class ScoutNavigationManagerServer(object):
         goal.target_pose.header.stamp = rospy.Time.now()
         goal.target_pose.pose.position.x = pose["x"]
         goal.target_pose.pose.position.y = pose["y"]
-        qx, qy, qz, qw = quaternion_from_yaw_degrees(pose["yaw"])
-        goal.target_pose.pose.orientation.x = qx
-        goal.target_pose.pose.orientation.y = qy
-        goal.target_pose.pose.orientation.z = qz
-        goal.target_pose.pose.orientation.w = qw
+        orientation = pose["orientation"]
+        goal.target_pose.pose.orientation.x = orientation["x"]
+        goal.target_pose.pose.orientation.y = orientation["y"]
+        goal.target_pose.pose.orientation.z = orientation["z"]
+        goal.target_pose.pose.orientation.w = orientation["w"]
 
         # 更新状态并发送目标
         self._set_status("moving to %s" % target_name)
         rospy.loginfo(
-            "Resolved navigation request '%s' -> '%s' (x=%.3f, y=%.3f, yaw=%.1f)",
+            "Resolved navigation request '%s' -> '%s' "
+            "(x=%.3f, y=%.3f, orientation=[%.6f, %.6f, %.6f, %.6f])",
             name,
             target_name,
             pose["x"],
             pose["y"],
-            pose["yaw"],
+            orientation["x"],
+            orientation["y"],
+            orientation["z"],
+            orientation["w"],
         )
         self._client.send_goal(
             goal,

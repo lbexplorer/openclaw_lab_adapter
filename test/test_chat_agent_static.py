@@ -73,19 +73,41 @@ def install_fake_llm(module, responses: list[dict]) -> None:
 
 
 def install_fake_execution(module) -> None:
-    module.core.query_skill_status = lambda skill_name, dry_run=False: {
-        "skill": skill_name,
-        "status": "dry_run" if dry_run else "ok",
-        "returncode": 0,
-        "stdout": "ready",
-    }
-    module.core.execute_action = lambda skill_name, arguments, dry_run=False: {
-        "skill": skill_name,
-        "status": "dry_run" if dry_run else "ok",
-        "arguments": arguments,
-        "returncode": 0,
-        "stdout": "ok",
-    }
+    module.core.query_skill_status = lambda skill_name, dry_run=False: module.core.skill_protocol.make_result(
+        skill=skill_name,
+        status=module.core.skill_protocol.SkillStatus.ACCEPTED
+        if dry_run
+        else module.core.skill_protocol.SkillStatus.SUCCESS,
+        execution_mode=module.core.skill_protocol.ExecutionMode.SYNC,
+        message="ready",
+        data={"raw_status": "ready" if skill_name == "scout_navigation_manager" else "stop", "dry_run": dry_run},
+    )
+    module.core.execute_action = lambda skill_name, arguments, dry_run=False: module.core.skill_protocol.make_result(
+        skill=skill_name,
+        status=module.core.skill_protocol.SkillStatus.ACCEPTED
+        if dry_run
+        else module.core.skill_protocol.SkillStatus.SUCCESS,
+        execution_mode=module.core.skill_protocol.ExecutionMode.ASYNC,
+        message="ok",
+        data={"arguments": arguments, "dry_run": dry_run},
+    )
+
+
+def install_fake_navigation_failure(module) -> None:
+    module.core.query_skill_status = lambda skill_name, dry_run=False: module.core.skill_protocol.make_result(
+        skill=skill_name,
+        status=module.core.skill_protocol.SkillStatus.SUCCESS,
+        execution_mode=module.core.skill_protocol.ExecutionMode.SYNC,
+        message="ready",
+        data={"raw_status": "ready", "dry_run": dry_run},
+    )
+    module.core.execute_action = lambda skill_name, arguments, dry_run=False: module.core.skill_protocol.make_result(
+        skill=skill_name,
+        status=module.core.skill_protocol.SkillStatus.ACCEPTED,
+        execution_mode=module.core.skill_protocol.ExecutionMode.ASYNC,
+        message="导航目标已被服务接收，正在等待执行结果。",
+        data={"arguments": arguments, "dry_run": dry_run},
+    )
 
 
 def check_startup_banner(module) -> None:
@@ -207,6 +229,31 @@ def check_confirmation_and_execution(module) -> None:
     canceled = module.handle_chat_turn("取消", [], state, pending_long, skill_catalog, config, dry_run=True)
     if "已取消本次待执行操作" not in canceled["assistant_reply"]:
         fail("取消待执行动作失败")
+
+    install_fake_navigation_failure(module)
+    action = module.PlannedSkillCall(
+        skill_name="scout_navigation_manager",
+        arguments={"target": "工位2"},
+        summary="导航到工位2",
+    )
+    failed_nav = module.execute_actions_with_guard(
+        [action],
+        state,
+        [],
+        "带我去工位2",
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [tool_call("call_nav_failed", "scout_navigation_manager", {"target": "工位2"})],
+        },
+        config,
+        skill_catalog,
+        dry_run=False,
+    )
+    if "失败" not in failed_nav["assistant_reply"] and "未完成" not in failed_nav["assistant_reply"]:
+        fail("导航失败未向用户明确反馈")
+    if failed_nav["updated_state"].mode != "idle":
+        fail("导航失败后不应把状态更新为 navigating")
     print("[OK] 确认与执行策略通过")
 
 
