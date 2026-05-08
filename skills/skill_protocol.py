@@ -97,6 +97,8 @@ def status_from_navigation_status(raw_status: str) -> tuple[str, str]:
         return SkillStatus.UNAVAILABLE, "导航状态为空，无法确认导航服务状态。"
     if lowered == "finish":
         return SkillStatus.SUCCESS, "导航任务已完成。"
+    if lowered.startswith("cancelled"):
+        return SkillStatus.SUCCESS, "导航任务已取消。"
     if lowered.startswith("moving to "):
         return SkillStatus.RUNNING, "导航任务正在执行。"
     if lowered == "ready":

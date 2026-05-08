@@ -14,6 +14,18 @@ agent:
   max_actions: 3
   async_result_timeout_seconds: 10
   async_result_poll_seconds: 1
+  skill_timeouts:
+    default_execute_seconds: 60
+    default_status_seconds: 15
+    scout_navigation_manager:
+      execute_seconds: 30
+      status_seconds: 15
+    scout_move_control:
+      execute_seconds: 30
+      status_seconds: 15
+    patrol_fixed_points:
+      execute_seconds: 600
+      status_seconds: 15
   confirmation_policy:
     always_confirm_navigation: true
     always_confirm_multi_step_move: true
@@ -65,3 +77,26 @@ skills:
     status_supported: true
     arguments:
       command: "动作命令字符串，例如 forward 1, left 1, stop 0.5"
+
+  patrol_fixed_points:
+    enabled: true
+    description: "按固定巡逻点顺序调用导航 skill，完成大车固定点巡逻 Demo 流程。"
+    capabilities:
+      - "默认路线：原点、巡逻点2、巡逻点3、巡逻点4、原点"
+      - "按顺序等待每个导航点完成后再下发下一个点"
+      - "返回当前巡逻状态、当前点、已完成点和失败点"
+    query_keywords:
+      - "巡逻"
+      - "固定点"
+      - "patrol"
+    examples:
+      - "开始巡逻"
+      - "按默认路线巡逻"
+      - "执行固定点巡逻"
+    risk_level: high
+    status_supported: true
+    arguments:
+      action: "巡逻操作，支持 run、status、stop；默认 run"
+      patrol_points: "逗号分隔巡逻点名称，留空或 default 表示默认路线"
+      loop: "是否循环巡逻，当前 Demo 阶段默认 false"
+      stop_on_detection: "检测到人员后是否停止巡逻，当前预留，默认 false"

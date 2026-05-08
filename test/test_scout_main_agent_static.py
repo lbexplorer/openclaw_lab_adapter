@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import yaml
@@ -62,6 +63,14 @@ def check_config_structure(config: dict) -> None:
         fail("agent.max_actions 非法")
     if "confirmation_policy" not in agent_cfg:
         fail("agent.confirmation_policy 缺失")
+    timeout_cfg = agent_cfg.get("skill_timeouts")
+    if not isinstance(timeout_cfg, dict):
+        fail("agent.skill_timeouts 缺失")
+    if int(timeout_cfg.get("default_status_seconds", 0)) <= 0:
+        fail("agent.skill_timeouts.default_status_seconds 非法")
+    patrol_timeout = ((timeout_cfg.get("patrol_fixed_points") or {}).get("execute_seconds"))
+    if int(patrol_timeout or 0) < 120:
+        fail("patrol_fixed_points.execute_seconds 不应短于单点巡逻等待时间")
     print(f"[OK] max_actions = {agent_cfg.get('max_actions')}")
 
     for name, payload in skills_cfg.items():
@@ -85,7 +94,7 @@ def check_catalog_and_validation(module) -> None:
     overview = module.format_capability_overview(skill_catalog)
     if "当前已启用 skills" not in overview:
         fail("能力总览生成失败")
-    if "导航地点" not in overview:
+    if "导航地点" not in overview and "导航点" not in overview:
         fail("导航地点未写入能力总览")
 
     tools = module.build_tools(skill_catalog)
@@ -111,6 +120,24 @@ def check_catalog_and_validation(module) -> None:
     )
     if chained_args["command"] != "forward 1, left 1":
         fail("连续移动动作参数验证失败")
+
+    patrol_args = module.validate_tool_call(
+        "patrol_fixed_points",
+        {"action": "run", "patrol_points": "default", "loop": "false", "stop_on_detection": "false"},
+        skill_catalog,
+    )
+    if patrol_args["action"] != "run" or patrol_args["patrol_points"] != "" or patrol_args["loop"] != "false":
+        fail("巡逻工具参数默认值验证失败")
+    patrol_stop_args = module.validate_tool_call(
+        "patrol_fixed_points",
+        {"action": "stop", "patrol_points": "", "loop": "false", "stop_on_detection": "false"},
+        skill_catalog,
+    )
+    if patrol_stop_args["action"] != "stop":
+        fail("巡逻停止工具参数验证失败")
+    stop_command, _, _ = module.build_execution_command("patrol_fixed_points", patrol_stop_args)
+    if "--stop" not in stop_command:
+        fail("巡逻停止 action 应映射为 patrol.py --stop")
     print("[OK] 合法工具参数验证通过")
 
     try:
@@ -173,7 +200,65 @@ def check_skill_protocol(module) -> None:
     )
     if status_result.get("status") != module.skill_protocol.SkillStatus.RUNNING:
         fail("moving to 状态应归一化为 running")
+
+    patrol_stdout = module.skill_protocol.make_result(
+        skill="patrol_fixed_points",
+        status=module.skill_protocol.SkillStatus.SUCCESS,
+        execution_mode=module.skill_protocol.ExecutionMode.SYNC,
+        message="固定点巡逻已完成。",
+        data={"patrol_status": "finished", "completed_waypoints": ["原点"]},
+    )
+    parsed_patrol = module.normalize_process_result(
+        skill_name="patrol_fixed_points",
+        operation="execute",
+        arguments={"action": "run", "patrol_points": "", "loop": "false", "stop_on_detection": "false"},
+        command=["python", "patrol.py", "--run"],
+        returncode=0,
+        stdout=__import__("json").dumps(patrol_stdout, ensure_ascii=False),
+        stderr="",
+    )
+    if parsed_patrol.get("skill") != "patrol_fixed_points" or parsed_patrol.get("status") != module.skill_protocol.SkillStatus.SUCCESS:
+        fail("巡逻 SkillResult JSON 未被 agent 正确解析")
     print("[OK] SkillResult 协议归一化通过")
+
+
+def check_timeout_and_progress(module) -> None:
+    config = module.load_agent_config(CONFIG_PATH)
+    if int(module.get_skill_timeout(config, "patrol_fixed_points", "execute")) != 600:
+        fail("巡逻 skill agent 总超时应为 600 秒")
+    if int(module.get_skill_timeout(config, "scout_navigation_manager", "status")) != 15:
+        fail("导航状态查询超时应为 15 秒")
+
+    command = [sys.executable, "-c", "import time; time.sleep(2)"]
+    result = module.run_skill_command(
+        skill_name="patrol_fixed_points",
+        command=command,
+        script_path=SCRIPT_PATH,
+        script_rel_path=SCRIPT_PATH,
+        arguments={"patrol_points": ""},
+        operation="execute",
+        timeout_seconds=0.1,
+    )
+    if result.get("status") != module.skill_protocol.SkillStatus.TIMEOUT:
+        fail("skill 子进程超时应返回 timeout")
+    if (result.get("error") or {}).get("code") != "SKILL_PROCESS_TIMEOUT":
+        fail("skill 子进程超时应记录 SKILL_PROCESS_TIMEOUT")
+    if "timeout_seconds" not in result.get("trace", {}):
+        fail("skill 子进程超时 trace 应记录 timeout_seconds")
+
+    step = module.build_step_record(
+        index=1,
+        skill_name="patrol_fixed_points",
+        arguments={"action": "run", "patrol_points": ""},
+        operation="execute",
+        timeout_seconds=600,
+    )
+    if step.get("status") != module.skill_protocol.SkillStatus.RUNNING:
+        fail("步骤初始状态应为 running")
+    for key in ["index", "skill", "arguments", "summary", "started_at", "timeout_seconds", "result"]:
+        if key not in step:
+            fail(f"步骤记录缺少字段: {key}")
+    print("[OK] 超时与进度记录通过")
 
 
 def check_confirmation_policy(module) -> None:
@@ -211,6 +296,7 @@ def main() -> None:
     check_message_normalization(module)
     check_catalog_and_validation(module)
     check_skill_protocol(module)
+    check_timeout_and_progress(module)
     check_confirmation_policy(module)
     print("[OK] scout_main_agent 静态测试通过")
 

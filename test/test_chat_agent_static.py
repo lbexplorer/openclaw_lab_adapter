@@ -118,7 +118,7 @@ def check_startup_banner(module) -> None:
         fail("启动 banner 缺少技能标题")
     if "参数说明" not in banner or "示例" not in banner:
         fail("启动 banner 未展示参数或示例")
-    if "导航地点" not in banner:
+    if "导航地点" not in banner and "导航点" not in banner:
         fail("启动 banner 未展示导航地点")
     print("[OK] 启动展示通过")
 
@@ -212,6 +212,28 @@ def check_confirmation_and_execution(module) -> None:
         fail("简单短动作 dry-run 未展示原始参数或命令")
     if "decision: 可直接执行" not in move_result["assistant_reply"]:
         fail("简单短动作未展示确认策略决策")
+
+    install_fake_execution(module)
+    install_fake_llm(
+        module,
+        [
+            make_llm_response(
+                tool_calls=[
+                    tool_call(
+                        "call_patrol",
+                        "patrol_fixed_points",
+                        {"patrol_points": "default", "loop": "false", "stop_on_detection": "false"},
+                    )
+                ]
+            )
+        ],
+    )
+    patrol = module.handle_chat_turn("开始巡逻", [], state, None, skill_catalog, config, dry_run=True)
+    if "待执行操作" not in patrol["assistant_reply"] or "固定点巡逻" not in patrol["assistant_reply"]:
+        fail("巡逻请求未进入待确认流程")
+    pending_patrol = patrol.get("pending_intent")
+    if pending_patrol is None or pending_patrol.actions[0].skill_name != "patrol_fixed_points":
+        fail("巡逻待确认 action 解析失败")
 
     install_fake_llm(
         module,

@@ -44,6 +44,7 @@ class RobotState:
     mode: str = "idle"
     last_target: str | None = None
     last_action: str | None = None
+    last_patrol_status: str | None = None
     last_skill: str | None = None
     last_user_text: str | None = None
 
@@ -99,6 +100,8 @@ def summarize_robot_state(state: RobotState) -> str:
         return f"当前记录状态: navigating, last_target={state.last_target}, last_skill={state.last_skill}"
     if state.mode == "moving" and state.last_action:
         return f"当前记录状态: moving, last_action={state.last_action}, last_skill={state.last_skill}"
+    if state.mode == "patrolling" and state.last_patrol_status:
+        return f"当前记录状态: patrolling, patrol_status={state.last_patrol_status}, last_skill={state.last_skill}"
     if state.last_skill:
         return f"当前记录状态: {state.mode}, last_skill={state.last_skill}"
     return "当前记录状态: idle"
@@ -109,6 +112,8 @@ def build_status_reply(state: RobotState) -> str:
         return f"我当前记录的状态是正在前往{state.last_target}。"
     if state.mode == "moving" and state.last_action:
         return f"我当前记录的状态是正在执行动作：{state.last_action}。"
+    if state.mode == "patrolling" and state.last_patrol_status:
+        return f"我当前记录的状态是巡逻中：{state.last_patrol_status}。"
     return "我当前记录的状态是空闲。"
 
 
@@ -117,6 +122,8 @@ def build_last_action_reply(state: RobotState) -> str:
         return f"我上一条执行的导航任务是前往{state.last_target}。"
     if state.last_skill == "scout_move_control" and state.last_action:
         return f"我上一条执行的底盘动作是：{state.last_action}。"
+    if state.last_skill == "patrol_fixed_points" and state.last_patrol_status:
+        return f"我上一条执行的巡逻任务状态是：{state.last_patrol_status}。"
     return "我这次会话里还没有执行过动作。"
 
 
@@ -146,6 +153,17 @@ def detect_capability_query(user_text: str, skill_catalog: dict[str, dict[str, A
                     "；".join(payload.get("capabilities") or []),
                     "参数说明：" + "；".join(f"{k}={v}" for k, v in (payload.get("arguments") or {}).items()),
                     "可用地点：" + "、".join(payload.get("available_waypoints") or []),
+                    "示例：" + "；".join(payload.get("examples") or []),
+                ]
+            )
+    if "patrol_fixed_points" in normalized or "巡逻" in normalized:
+        payload = skill_catalog.get("patrol_fixed_points")
+        if payload:
+            return "\n".join(
+                [
+                    "patrol_fixed_points 可以执行这些操作：",
+                    "；".join(payload.get("capabilities") or []),
+                    "参数说明：" + "；".join(f"{k}={v}" for k, v in (payload.get("arguments") or {}).items()),
                     "示例：" + "；".join(payload.get("examples") or []),
                 ]
             )
@@ -301,12 +319,16 @@ def service_start_hint(skill_name: str) -> str:
         return "请先启动导航适配服务 navigation_manager_server.py，并确认 move_base 已正常运行。"
     if skill_name == "scout_move_control":
         return "请先启动运动适配服务 move_control_server.py，并确认底盘控制链路已接通。"
+    if skill_name == "patrol_fixed_points":
+        return "请先启动导航适配服务 navigation_manager_server.py，并确认 move_base 已正常运行。"
     return "请先启动对应的适配服务。"
 
 
 def is_status_ready(result: dict[str, Any]) -> bool:
     if result.get("data", {}).get("dry_run"):
         return True
+    if result.get("skill") == "patrol_fixed_points":
+        return result.get("status") != core.skill_protocol.SkillStatus.UNAVAILABLE
     if result.get("status") != core.skill_protocol.SkillStatus.SUCCESS:
         return False
     raw_status = str(result.get("data", {}).get("raw_status", "")).strip().lower()
@@ -331,6 +353,9 @@ def update_robot_state_for_action(state: RobotState, action: PlannedSkillCall) -
         else:
             updated.mode = "moving"
         updated.last_action = command
+    elif action.skill_name == "patrol_fixed_points":
+        updated.mode = "idle"
+        updated.last_patrol_status = "finished"
     return updated
 
 
@@ -369,6 +394,10 @@ def build_execution_fallback_reply(executed_results: list[dict[str, Any]]) -> st
             return f"导航任务已完成，目标是 {arguments.get('target', '')}。"
         if skill_name == "scout_move_control":
             return f"底盘动作已完成：{arguments.get('command', '')}。"
+        if skill_name == "patrol_fixed_points":
+            data = result.get("data", {})
+            completed = "、".join(data.get("completed_waypoints") or [])
+            return f"固定点巡逻已完成。已完成点位：{completed}。"
         return message or "skill 已成功完成。"
     if status in {core.skill_protocol.SkillStatus.ACCEPTED, core.skill_protocol.SkillStatus.RUNNING}:
         return message or "skill 已接收，仍在执行中。"

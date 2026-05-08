@@ -2,6 +2,7 @@
 """Client helper for Scout named-waypoint navigation."""
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -87,6 +88,13 @@ def list_positions():
     return client().message
 
 
+def cancel_navigation():
+    rospy.wait_for_service("/scout_navigation_manager/cancel_navigation", timeout=5.0)
+    client = rospy.ServiceProxy("/scout_navigation_manager/cancel_navigation", Trigger)
+    response = client()
+    return response.success, response.message
+
+
 def set_pose(name):
     if SetString is not None:
         rospy.wait_for_service("/scout_navigation_manager/set_pose", timeout=5.0)
@@ -102,11 +110,12 @@ def set_pose(name):
     return True, "published via topic fallback"
 
 
-def wait_for_dispatched(timeout=3.0):
+def wait_for_dispatched(timeout=10.0, expected_target=None):
     """等待服务端发布目标坐标信息到 /scout_navigation_manager/goal_dispatched。
 
     Args:
-        timeout (float): 等待超时秒数，默认3秒。
+        timeout (float): 等待超时秒数，默认10秒。
+        expected_target (str): 期望收到确认的标准目标点名称。
 
     Returns:
         str or None: 坐标信息字符串，超时则返回None。
@@ -115,6 +124,13 @@ def wait_for_dispatched(timeout=3.0):
         msg = rospy.wait_for_message(
             "/scout_navigation_manager/goal_dispatched", String, timeout=timeout
         )
+        if expected_target:
+            try:
+                payload = json.loads(msg.data)
+            except (TypeError, ValueError):
+                return msg.data
+            if payload.get("target") != expected_target:
+                return None
         return msg.data
     except rospy.ROSException:
         return None
@@ -124,8 +140,15 @@ def main():
     parser = argparse.ArgumentParser(description="Scout navigation manager client")
     parser.add_argument("--status", action="store_true", help="Query navigation status")
     parser.add_argument("--list", action="store_true", help="List positions")
+    parser.add_argument("--cancel", action="store_true", help="Cancel active navigation goal")
     parser.add_argument("--go", type=str, help='Send target name, e.g. --go "原点"')
     parser.add_argument("--waypoints", default=default_waypoint_path(), help="Waypoint YAML path")
+    parser.add_argument(
+        "--dispatch-timeout-seconds",
+        type=float,
+        default=10.0,
+        help="Seconds to wait for /scout_navigation_manager/goal_dispatched confirmation",
+    )
     args = parser.parse_args()
 
     ensure_ros()
@@ -137,6 +160,12 @@ def main():
     if args.list:
         print(list_positions())
         return
+    if args.cancel:
+        success, message = cancel_navigation()
+        print("cancelled=%s message=%s" % (success, message))
+        if not success:
+            sys.exit(3)
+        return
     if args.go:
         names = load_waypoint_names(args.waypoints)
         resolved_name = resolve_waypoint_name(args.waypoints, args.go)
@@ -145,9 +174,18 @@ def main():
             print("available: %s" % ",".join(names))
             sys.exit(2)
         success, message = set_pose(args.go)
-        dispatched = wait_for_dispatched(timeout=3.0)
+        if not success:
+            print("success=%s resolved=%s message=%s" % (success, resolved_name, message))
+            sys.exit(3)
+        dispatched = wait_for_dispatched(
+            timeout=args.dispatch_timeout_seconds,
+            expected_target=resolved_name,
+        )
         if dispatched:
             print("坐标: %s" % dispatched)
+            print("dispatch_confirmed=true")
+        else:
+            print("dispatch_confirmed=false timeout_seconds=%.1f" % args.dispatch_timeout_seconds)
         print("success=%s resolved=%s message=%s" % (success, resolved_name, message))
         return
 
