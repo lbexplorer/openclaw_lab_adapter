@@ -32,10 +32,12 @@ NAVIGATE_REL_PATH = Path("skills") / "scout_navigation_manager" / "scripts" / "n
 MOVE_CLIENT_REL_PATH = Path("skills") / "scout_move_control" / "scripts" / "move_control_client.py"
 PATROL_REL_PATH = Path("skills") / "patrol_fixed_points" / "scripts" / "patrol.py"
 CHECK_PERSON_REL_PATH = Path("skills") / "check_person_detected" / "scripts" / "check_person_detected.py"
+HANDOFF_REL_PATH = Path("skills") / "trigger_existing_tracking_handoff" / "scripts" / "trigger_handoff.py"
 NAVIGATE_PATH = ROOT_DIR / NAVIGATE_REL_PATH
 MOVE_CLIENT_PATH = ROOT_DIR / MOVE_CLIENT_REL_PATH
 PATROL_PATH = ROOT_DIR / PATROL_REL_PATH
 CHECK_PERSON_PATH = ROOT_DIR / CHECK_PERSON_REL_PATH
+HANDOFF_PATH = ROOT_DIR / HANDOFF_REL_PATH
 NAVIGATION_CONFIG_PATH = ROOT_DIR / "skills" / "scout_navigation_manager" / "config" / "navigation_position.yaml"
 MOVE_COMMAND_PATTERN = re.compile(r"^(forward|backward|left|right|stop)\s+(\d+(?:\.\d+)?)$")
 
@@ -211,11 +213,13 @@ def build_system_prompt(skill_catalog: dict[str, dict[str, Any]], max_actions: i
         2. 导航类请求优先调用 scout_navigation_manager。
         3. 固定点巡逻请求调用 patrol_fixed_points，开始巡逻 action=run，查询巡逻 action=status，停止巡逻或停止当前巡逻导航 action=stop。
         4. 人员检测查询请求调用 check_person_detected；默认 source=track_pose。
-        5. 底盘动作请求调用 scout_move_control。
-        6. command 必须是英文动作字符串，支持单条或逗号分隔的动作序列，例如 `forward 1` 或 `forward 1, left 1`。
-        7. target 必须是可用地点中的标准地点名。
-        8. patrol_points 为空或 default 时表示默认巡逻路线；action 默认 run；loop 和 stop_on_detection 默认 false。
-        9. 如果请求超出已知能力，不要调用工具，直接用中文简短说明当前无法执行。
+        5. 协同交接请求调用 trigger_existing_tracking_handoff；它只确认现有 /track_pose 交接链路，不主动发布目标。
+        6. 协同 Demo 巡逻请求可调用 patrol_fixed_points，并将 stop_on_detection 设为 true。
+        7. 底盘动作请求调用 scout_move_control。
+        8. command 必须是英文动作字符串，支持单条或逗号分隔的动作序列，例如 `forward 1` 或 `forward 1, left 1`。
+        9. target 必须是可用地点中的标准地点名。
+        10. patrol_points 为空或 default 时表示默认巡逻路线；action 默认 run；loop 默认 false。
+        11. 如果请求超出已知能力，不要调用工具，直接用中文简短说明当前无法执行。
         """
     ).strip()
 
@@ -342,6 +346,20 @@ def validate_tool_call(skill_name: str, arguments: dict[str, Any], skill_catalog
             "confidence_threshold": confidence_threshold,
         }
 
+    if skill_name == "trigger_existing_tracking_handoff":
+        action = str(arguments.get("action", "check")).strip().lower() or "check"
+        if action not in {"check", "status"}:
+            raise ValueError(f"unsupported handoff action: {action}")
+        topic = str(arguments.get("topic", "")).strip()
+        timeout_seconds = str(arguments.get("timeout_seconds", "3")).strip() or "3"
+        require_subscriber = str(arguments.get("require_subscriber", "false")).strip() or "false"
+        return {
+            "action": action,
+            "topic": topic,
+            "timeout_seconds": timeout_seconds,
+            "require_subscriber": require_subscriber,
+        }
+
     raise ValueError(f"no validator for skill: {skill_name}")
 
 
@@ -404,6 +422,9 @@ def summarize_action(skill_name: str, arguments: dict[str, Any]) -> str:
     if skill_name == "check_person_detected":
         source = arguments.get("source", "track_pose")
         return f"查询人员检测结果 {source}"
+    if skill_name == "trigger_existing_tracking_handoff":
+        action = arguments.get("action", "check")
+        return "确认现有小车协同交接链路" if action == "check" else "查询现有协同交接状态"
     return f"执行 {skill_name}"
 
 
@@ -582,6 +603,20 @@ def build_execution_command(skill_name: str, arguments: dict[str, Any]) -> tuple
             arguments.get("timeout_seconds", "3"),
             "--confidence-threshold",
             arguments.get("confidence_threshold", "0.5"),
+        ]
+        if arguments.get("topic"):
+            command.extend(["--topic", arguments["topic"]])
+    elif skill_name == "trigger_existing_tracking_handoff":
+        script_path = HANDOFF_PATH
+        script_rel_path = HANDOFF_REL_PATH
+        command = [
+            sys.executable,
+            str(script_rel_path),
+            "--status" if arguments.get("action") == "status" else "--check",
+            "--timeout-seconds",
+            arguments.get("timeout_seconds", "3"),
+            "--require-subscriber",
+            arguments.get("require_subscriber", "false"),
         ]
         if arguments.get("topic"):
             command.extend(["--topic", arguments["topic"]])
@@ -813,6 +848,10 @@ def query_skill_status(skill_name: str, config: dict[str, Any] | None = None, dr
     elif skill_name == "check_person_detected":
         script_path = CHECK_PERSON_PATH
         script_rel_path = CHECK_PERSON_REL_PATH
+        command = [sys.executable, str(script_rel_path), "--status"]
+    elif skill_name == "trigger_existing_tracking_handoff":
+        script_path = HANDOFF_PATH
+        script_rel_path = HANDOFF_REL_PATH
         command = [sys.executable, str(script_rel_path), "--status"]
     else:
         raise ValueError(f"unsupported status skill: {skill_name}")

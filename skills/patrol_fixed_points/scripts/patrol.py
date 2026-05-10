@@ -28,6 +28,7 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = SKILL_DIR / "config" / "patrol_points.yaml"
 DEFAULT_STATE_PATH = SKILL_DIR / "patrol_state.json"
 NAVIGATE_PATH = ROOT_DIR / "skills" / "scout_navigation_manager" / "scripts" / "navigate.py"
+CHECK_PERSON_PATH = ROOT_DIR / "skills" / "check_person_detected" / "scripts" / "check_person_detected.py"
 WAYPOINT_PATH = ROOT_DIR / "skills" / "scout_navigation_manager" / "config" / "navigation_position.yaml"
 
 
@@ -175,6 +176,62 @@ def cancel_navigation() -> dict[str, Any]:
     return run_navigate_command(["--cancel"])
 
 
+def run_detection_command(args: list[str]) -> dict[str, Any]:
+    command = [sys.executable, str(CHECK_PERSON_PATH.relative_to(ROOT_DIR)), *args]
+    completed = subprocess.run(
+        command,
+        cwd=str(ROOT_DIR),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return {
+        "command": command,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+    }
+
+
+def parse_skill_result(stdout: str) -> dict[str, Any] | None:
+    text = (stdout or "").strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict) and {"skill", "status", "data"}.issubset(payload.keys()):
+        return payload
+    return None
+
+
+def check_detection_once(
+    source: str,
+    topic: str,
+    timeout_seconds: float,
+    confidence_threshold: float,
+) -> dict[str, Any]:
+    args = [
+        "--check",
+        "--source",
+        source,
+        "--timeout-seconds",
+        str(timeout_seconds),
+        "--confidence-threshold",
+        str(confidence_threshold),
+    ]
+    if topic:
+        args.extend(["--topic", topic])
+    trace = run_detection_command(args)
+    payload = parse_skill_result(trace.get("stdout", ""))
+    return {
+        "trace": trace,
+        "result": payload,
+        "person_detected": bool((payload or {}).get("data", {}).get("person_detected")),
+    }
+
+
 def result(
     status: str,
     message: str,
@@ -240,6 +297,37 @@ def stopped_result(
     return result(skill_protocol.SkillStatus.SUCCESS, message, data, trace=trace)
 
 
+def detected_person_result(
+    point: str,
+    completed_points: list[str],
+    detection_payload: dict[str, Any],
+    cancel_trace: dict[str, Any],
+) -> dict[str, Any]:
+    detection_data = dict((detection_payload.get("data") or {}))
+    data = {
+        "patrol_status": "detected_person",
+        "current_waypoint": point,
+        "completed_waypoints": completed_points,
+        "failed_waypoint": "",
+        "last_navigation_status": cancel_trace.get("stdout") or cancel_trace.get("stderr") or "cancel requested",
+        "stop_requested": True,
+        "person_detected": True,
+        "target_pose": detection_data.get("target_pose"),
+        "source_topic": detection_data.get("source_topic", ""),
+        "detection": detection_data,
+    }
+    write_state(data)
+    return result(
+        skill_protocol.SkillStatus.SUCCESS,
+        "巡逻中检测到人员，已停止当前巡逻导航并交由现有协同链路处理。",
+        data,
+        trace={
+            "detection": detection_payload,
+            "cancel_navigation": cancel_trace,
+        },
+    )
+
+
 def stop_state_result() -> dict[str, Any]:
     state = read_state()
     completed_points = list(state.get("completed_waypoints") or [])
@@ -270,6 +358,11 @@ def wait_until_waypoint_done(
     completed_points: list[str],
     timeout_seconds: float,
     poll_seconds: float,
+    stop_on_detection: bool = False,
+    detection_source: str = "track_pose",
+    detection_topic: str = "/track_pose",
+    detection_timeout_seconds: float = 0.2,
+    detection_confidence_threshold: float = 0.5,
 ) -> dict[str, Any] | None:
     deadline = time.time() + timeout_seconds
     last_trace: dict[str, Any] = {}
@@ -278,6 +371,35 @@ def wait_until_waypoint_done(
             cancel_trace = cancel_navigation()
             return stopped_result(point, completed_points, "巡逻已按停止请求结束。", trace=cancel_trace)
         time.sleep(min(poll_seconds, max(deadline - time.time(), 0.0)))
+        if stop_on_detection:
+            detection_check = check_detection_once(
+                detection_source,
+                detection_topic,
+                detection_timeout_seconds,
+                detection_confidence_threshold,
+            )
+            detection_payload = detection_check.get("result") or {}
+            detection_status = detection_payload.get("status")
+            if detection_check.get("person_detected"):
+                cancel_trace = cancel_navigation()
+                return detected_person_result(point, completed_points, detection_payload, cancel_trace)
+            if detection_status == skill_protocol.SkillStatus.UNAVAILABLE:
+                detail = (detection_payload.get("error") or {}).get("message") or detection_payload.get("message", "")
+                return result(
+                    skill_protocol.SkillStatus.UNAVAILABLE,
+                    "巡逻中无法读取人员检测结果：%s" % detail,
+                    {
+                        "patrol_status": "error",
+                        "current_waypoint": point,
+                        "completed_waypoints": completed_points,
+                        "failed_waypoint": point,
+                        "last_navigation_status": "detection unavailable",
+                        "person_detected": False,
+                    },
+                    error_code="PATROL_DETECTION_UNAVAILABLE",
+                    error_message=detail,
+                    trace=detection_check.get("trace", {}),
+                )
         trace = query_navigation_status()
         last_trace = trace
         raw_status = trace.get("stdout", "").strip()
@@ -365,6 +487,10 @@ def run_patrol(args: argparse.Namespace) -> dict[str, Any]:
         stop_on_detection = parse_bool(args.stop_on_detection, bool(cfg.get("stop_on_detection", False)))
         timeout_seconds = float(args.waypoint_timeout_seconds or cfg.get("waypoint_timeout_seconds", 120))
         poll_seconds = float(args.status_poll_seconds or cfg.get("status_poll_seconds", 1))
+        detection_source = str(cfg.get("detection_source", "track_pose"))
+        detection_topic = str(cfg.get("detection_topic", "/track_pose"))
+        detection_timeout_seconds = float(cfg.get("detection_timeout_seconds", 0.2))
+        detection_confidence_threshold = float(cfg.get("detection_confidence_threshold", 0.5))
         validate_points(points)
     except (ValueError, TypeError) as exc:
         data = {
@@ -471,7 +597,17 @@ def run_patrol(args: argparse.Namespace) -> dict[str, Any]:
                 trace=dispatch_trace,
             )
 
-        failure = wait_until_waypoint_done(point, completed_points, timeout_seconds, poll_seconds)
+        failure = wait_until_waypoint_done(
+            point,
+            completed_points,
+            timeout_seconds,
+            poll_seconds,
+            stop_on_detection=stop_on_detection,
+            detection_source=detection_source,
+            detection_topic=detection_topic,
+            detection_timeout_seconds=detection_timeout_seconds,
+            detection_confidence_threshold=detection_confidence_threshold,
+        )
         if failure is not None:
             write_state(failure.get("data", {}))
             return failure

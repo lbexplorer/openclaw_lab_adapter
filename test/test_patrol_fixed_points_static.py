@@ -43,6 +43,8 @@ def check_default_config(module) -> None:
         fail(f"默认巡逻点错误: {cfg.get('patrol_points')}")
     if int(cfg.get("waypoint_timeout_seconds", 0)) != 120:
         fail("单点默认等待超时应为 120 秒")
+    if cfg.get("detection_source") != "track_pose" or cfg.get("detection_topic") != "/track_pose":
+        fail("stop_on_detection 默认应读取 /track_pose")
     print("[OK] 默认巡逻配置通过")
 
 
@@ -95,6 +97,32 @@ def check_stop_support(module) -> None:
     print("[OK] 巡逻停止支持通过")
 
 
+def check_detection_stop_support(module) -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    for text in ["CHECK_PERSON_PATH", "check_detection_once", "detected_person_result", "cancel_navigation()"]:
+        if text not in source:
+            fail(f"stop_on_detection 缺少检测停止链路: {text}")
+    detection_payload = {
+        "data": {
+            "target_pose": {"position": {"x": 1.0, "y": 2.0, "z": 0.0}},
+            "source_topic": "/track_pose",
+        }
+    }
+    cancel_trace = {"stdout": "cancelled=true message=ok", "stderr": ""}
+    payload = module.detected_person_result("巡逻点2", ["原点"], detection_payload, cancel_trace)
+    data = payload.get("data", {})
+    if payload.get("status") != module.skill_protocol.SkillStatus.SUCCESS:
+        fail("检测到人员后应返回 success")
+    if data.get("patrol_status") != "detected_person":
+        fail("检测到人员后 patrol_status 应为 detected_person")
+    if data.get("person_detected") is not True:
+        fail("检测到人员结果缺少 person_detected=true")
+    if data.get("target_pose") is None or data.get("source_topic") != "/track_pose":
+        fail("检测到人员结果未保留 target_pose/source_topic")
+    module.reset_state_result()
+    print("[OK] 检测触发停止支持通过")
+
+
 def check_invalid_run(module) -> None:
     args = argparse.Namespace(
         patrol_points="火星基地",
@@ -119,6 +147,7 @@ def main() -> None:
     check_parsing_and_validation(module)
     check_status_result(module)
     check_stop_support(module)
+    check_detection_stop_support(module)
     check_invalid_run(module)
     print("[OK] patrol_fixed_points 静态测试通过")
 

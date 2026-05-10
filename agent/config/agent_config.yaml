@@ -29,6 +29,9 @@ agent:
     check_person_detected:
       execute_seconds: 10
       status_seconds: 5
+    trigger_existing_tracking_handoff:
+      execute_seconds: 10
+      status_seconds: 5
   confirmation_policy:
     always_confirm_navigation: true
     always_confirm_multi_step_move: true
@@ -128,3 +131,28 @@ skills:
       topic: "可选，覆盖默认 topic；track_pose 默认 /track_pose，detect_msg 默认 /DetectMsg"
       timeout_seconds: "等待检测消息的超时时间，默认 3 秒"
       confidence_threshold: "读取 /DetectMsg 时的人员置信度阈值，默认 0.5"
+
+  trigger_existing_tracking_handoff:
+    enabled: true
+    description: "确认大车侧人员目标已进入现有大车到小车协同交接链路，不主动发布新指令。"
+    capabilities:
+      - "默认读取 /track_pose，确认现有人员目标 pose 已出现"
+      - "可检查 /track_pose 是否已有 subscriber，用于判断现有 bridge 或协同链路是否接入"
+      - "返回 target_pose、topic、subscriber 状态和 handoff 结果"
+    query_keywords:
+      - "协同"
+      - "交接"
+      - "小车跟踪"
+      - "handoff"
+      - "tracking"
+    examples:
+      - "触发小车协同跟踪"
+      - "确认目标已经交给小车"
+      - "查询协同交接状态"
+    risk_level: low
+    status_supported: true
+    arguments:
+      action: "交接操作，支持 check、status；默认 check"
+      topic: "可选，覆盖默认 topic；默认 /track_pose"
+      timeout_seconds: "等待目标 pose 的超时时间，默认 3 秒"
+      require_subscriber: "是否要求 /track_pose 已有 subscriber，默认 false"

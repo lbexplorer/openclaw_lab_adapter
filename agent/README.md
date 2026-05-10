@@ -6,6 +6,9 @@
 
 - `scout_navigation_manager`：命名地点导航
 - `scout_move_control`：前进、后退、转向、停止
+- `patrol_fixed_points`：固定点巡逻，可在检测到人员后停止
+- `check_person_detected`：读取已有人员检测 topic
+- `trigger_existing_tracking_handoff`：确认目标已进入现有大车到小车协同交接链路
 
 ## 入口
 

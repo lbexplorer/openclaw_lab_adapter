@@ -74,6 +74,9 @@ def check_config_structure(config: dict) -> None:
     detection_timeout = ((timeout_cfg.get("check_person_detected") or {}).get("execute_seconds"))
     if int(detection_timeout or 0) <= 0:
         fail("check_person_detected.execute_seconds 非法")
+    handoff_timeout = ((timeout_cfg.get("trigger_existing_tracking_handoff") or {}).get("execute_seconds"))
+    if int(handoff_timeout or 0) <= 0:
+        fail("trigger_existing_tracking_handoff.execute_seconds 非法")
     print(f"[OK] max_actions = {agent_cfg.get('max_actions')}")
 
     for name, payload in skills_cfg.items():
@@ -151,6 +154,16 @@ def check_catalog_and_validation(module) -> None:
     detection_command, _, _ = module.build_execution_command("check_person_detected", detection_args)
     if "--check" not in detection_command or "--source" not in detection_command:
         fail("人员检测执行命令应调用 check_person_detected.py --check")
+    handoff_args = module.validate_tool_call(
+        "trigger_existing_tracking_handoff",
+        {"action": "check", "topic": "", "timeout_seconds": "3", "require_subscriber": "false"},
+        skill_catalog,
+    )
+    if handoff_args["action"] != "check":
+        fail("协同交接工具参数验证失败")
+    handoff_command, _, _ = module.build_execution_command("trigger_existing_tracking_handoff", handoff_args)
+    if "--check" not in handoff_command or "--require-subscriber" not in handoff_command:
+        fail("协同交接执行命令应调用 trigger_handoff.py --check")
     print("[OK] 合法工具参数验证通过")
 
     try:
@@ -250,6 +263,24 @@ def check_skill_protocol(module) -> None:
     )
     if parsed_detection.get("skill") != "check_person_detected" or parsed_detection.get("data", {}).get("person_detected") is not True:
         fail("人员检测 SkillResult JSON 未被 agent 正确解析")
+    handoff_stdout = module.skill_protocol.make_result(
+        skill="trigger_existing_tracking_handoff",
+        status=module.skill_protocol.SkillStatus.SUCCESS,
+        execution_mode=module.skill_protocol.ExecutionMode.SYNC,
+        message="已确认人员目标进入现有大车到小车协同交接链路。",
+        data={"handoff_triggered": True, "source_topic": "/track_pose"},
+    )
+    parsed_handoff = module.normalize_process_result(
+        skill_name="trigger_existing_tracking_handoff",
+        operation="execute",
+        arguments={"action": "check", "topic": "", "timeout_seconds": "3", "require_subscriber": "false"},
+        command=["python", "trigger_handoff.py", "--check"],
+        returncode=0,
+        stdout=__import__("json").dumps(handoff_stdout, ensure_ascii=False),
+        stderr="",
+    )
+    if parsed_handoff.get("skill") != "trigger_existing_tracking_handoff" or parsed_handoff.get("data", {}).get("handoff_triggered") is not True:
+        fail("协同交接 SkillResult JSON 未被 agent 正确解析")
     print("[OK] SkillResult 协议归一化通过")
 
 

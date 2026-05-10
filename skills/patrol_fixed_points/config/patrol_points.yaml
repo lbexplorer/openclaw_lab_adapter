@@ -9,3 +9,7 @@ default_patrol:
   stop_on_detection: false
   waypoint_timeout_seconds: 120
   status_poll_seconds: 1
+  detection_source: track_pose
+  detection_topic: /track_pose
+  detection_timeout_seconds: 0.2
+  detection_confidence_threshold: 0.5

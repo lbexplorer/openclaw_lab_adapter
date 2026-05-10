@@ -20,6 +20,13 @@
 - `liubo_sailors_demo_skill_breakdown.md`
 - `yenan_sailors_patrol_tracking_design.md`
 
+## interfaces
+
+真实无人车接口确认、topic / service / DDS / launch 入口和现场链路说明：
+
+- `sailors_demo_interface_confirmation.md`
+- `sailors_tracking_command_interfaces.md`
+
 ## images
 
 文档图片统一放在 `images/` 下。Markdown 文档中优先使用相对路径引用，例如：

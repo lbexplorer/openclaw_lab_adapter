@@ -9,7 +9,7 @@ description: "大车固定点巡逻 skill。按配置顺序复用 scout_navigati
 
 该 skill 只负责按顺序调度已有 `scout_navigation_manager`。
 
-它不直接控制电机，不绕过 `move_base`，不重新实现路径规划，不处理人员检测。
+它不直接控制电机，不绕过 `move_base`，不重新实现路径规划。启用 `stop_on_detection` 时，它只调用现有 `check_person_detected` 读取 `/track_pose`，不启动或重写视觉检测。
 
 ## 默认路线
 
@@ -29,7 +29,7 @@ skills/patrol_fixed_points/config/patrol_points.yaml
 |---|---|---|
 | `patrol_points` | string | 逗号分隔巡逻点。为空时使用默认路线 |
 | `loop` | string/bool | 是否循环。当前 Demo 默认 `false` |
-| `stop_on_detection` | string/bool | 预留给后续人员检测触发停止。当前仅记录，不主动检测 |
+| `stop_on_detection` | string/bool | 是否在巡逻过程中读取人员检测结果并在检测到人员后停止巡逻 |
 
 ## 输出
 
@@ -37,17 +37,21 @@ skills/patrol_fixed_points/config/patrol_points.yaml
 
 | 字段 | 说明 |
 |---|---|
-| `patrol_status` | `idle / moving / arrived / finished / error` |
+| `patrol_status` | `idle / moving / arrived / finished / detected_person / error` |
 | `current_waypoint` | 当前巡逻目标点 |
 | `completed_waypoints` | 已完成巡逻点 |
 | `failed_waypoint` | 失败点位 |
 | `last_navigation_status` | 最近一次导航状态 |
+| `person_detected` | 启用检测停止并检测到人员时为 `true` |
+| `target_pose` | 检测到人员时读取到的 `/track_pose` |
+| `source_topic` | 检测来源 topic |
 
 ## 调试方式
 
 ```bash
 python3 skills/patrol_fixed_points/scripts/patrol.py --status
 python3 skills/patrol_fixed_points/scripts/patrol.py --run
+python3 skills/patrol_fixed_points/scripts/patrol.py --run --stop-on-detection true
 python3 skills/patrol_fixed_points/scripts/patrol.py --run --patrol-points "原点,巡逻点2,巡逻点3,巡逻点4,原点"
 ```
 
@@ -57,6 +61,7 @@ python3 skills/patrol_fixed_points/scripts/patrol.py --run --patrol-points "原�
 2. 每次只向 `scout_navigation_manager` 下发一个目标。
 3. 当前目标达到 `finish` 后才下发下一个目标。
 4. 全部点位完成后返回 `success`。
+5. 如果 `stop_on_detection=true`，巡逻中检测到 `/track_pose` 后取消当前导航并返回 `detected_person`。
 
 ## 失败判断
 

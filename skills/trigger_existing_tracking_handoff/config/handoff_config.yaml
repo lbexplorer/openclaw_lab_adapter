@@ -1,0 +1,6 @@
+default_handoff:
+  topic: /track_pose
+  timeout_seconds: 3
+  require_subscriber: false
+  dds_topic: PoseMsgTopic
+  handoff_mode: existing_vehicle_pipeline

@@ -219,7 +219,93 @@ python3 skills/check_person_detected/scripts/check_person_detected.py --check --
 - `data.detections`：`/DetectMsg` 返回的人员检测框
 - `data.confidence_threshold`：人员置信度阈值
 
-## 6. LLM 调度
+## 6. 追踪交接启动调试
+
+追踪交接当前优先复用现场已有能力：大车检测到目标后输出 `/track_pose`，现有桥接链路把目标交给小车，小车按现场既有流程前往目标并执行静态人员跟踪。
+
+`trigger_existing_tracking_handoff` 只读取和确认已有 `/track_pose`，不主动发布 `/track_pose`，不启动 DDS，不远程配置小车，也不直接发布 `/cmd_vel`。
+
+大车侧启动 Sailors 感知与 DDS 发送链路：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /ssd1/workspace/sailors_onboard/build/devel/setup.bash
+
+# 启动人员目标位姿来源。现场如果已有 3sensing_node.bash，可优先使用脚本。
+bash 3sensing_node.bash
+
+# 启动 /track_pose -> DDS PoseMsgTopic。现场如果已有 4dds_bridge.sh，可优先使用脚本。
+bash 4dds_bridge.sh
+```
+
+如果没有上述脚本，使用真实节点命令：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /ssd1/workspace/sailors_onboard/build/devel/setup.bash
+rosrun perception sensing_node
+rosrun saw_dds track_converter_sub
+```
+
+小车侧启动 DDS 接收链路：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /ssd1/workspace/sailors_onboard/build/devel/setup.bash
+rosrun saw_dds track_converter_pub
+rostopic echo /track_pose
+```
+
+如果现场使用 toy_utils 静态跟踪链路，另开终端启动并检查：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /ssd1/workspace/sailors_onboard/build/devel/setup.bash
+roslaunch perception_toy detection_tracking.launch
+roslaunch planner_toy track_planner.launch
+rostopic echo /DetectMsg
+rostopic echo /TrackMsg
+rostopic echo /cmd_vel
+```
+
+大车侧确认目标已经进入现有交接链路：
+
+```bash
+cd /ssd1/workspace/openclaw_lab_adapter
+source /opt/ros/noetic/setup.bash
+python3 skills/trigger_existing_tracking_handoff/scripts/trigger_handoff.py --status
+python3 skills/trigger_existing_tracking_handoff/scripts/trigger_handoff.py --check \
+  --topic /track_pose \
+  --timeout-seconds 3
+```
+
+只有当大车和桥接 subscriber 在同一个 ROS master 中可见时，才启用 subscriber 强校验：
+
+```bash
+python3 skills/trigger_existing_tracking_handoff/scripts/trigger_handoff.py --check \
+  --topic /track_pose \
+  --timeout-seconds 3 \
+  --require-subscriber true
+```
+
+巡逻中检测到人员后停止当前巡逻，并把目标交给现有追踪链路：
+
+```bash
+python3 skills/patrol_fixed_points/scripts/patrol.py --run --stop-on-detection true
+python3 skills/trigger_existing_tracking_handoff/scripts/trigger_handoff.py --check --timeout-seconds 3
+```
+
+返回结果应为统一 `SkillResult` JSON。重点看：
+
+- `data.handoff_triggered`：是否确认目标已进入现有协同交接链路
+- `data.target_pose`：从 `/track_pose` 读取到的人员目标位姿
+- `data.source_topic`：实际读取 topic
+- `data.bridge_subscriber_seen`：是否在 ROS master 中看到 subscriber
+- `data.dds_topic`：当前交接对应的 DDS topic，默认为 `PoseMsgTopic`
+
+注意：`handoff_triggered=true` 只代表大车侧目标已进入现有交接链路，不等价于小车已经到达目标或已经开始发布跟踪 `/cmd_vel`。小车侧真实跟踪状态仍需通过 `/track_pose`、`/TrackMsg`、`/cmd_vel` 和现场既有日志确认。
+
+## 7. LLM 调度
 
 先配置模型密钥，可放在项目根目录 `.env`：
 
@@ -244,6 +330,8 @@ python3 agent/scout_main_agent.py --text "前进1秒然后停止" --dry-run
 python3 agent/scout_main_agent.py --text "开始巡逻" --dry-run
 python3 agent/scout_main_agent.py --text "停止巡逻" --dry-run
 python3 agent/scout_main_agent.py --text "检查是否检测到人员" --dry-run
+python3 agent/scout_main_agent.py --text "触发小车协同跟踪" --dry-run
+python3 agent/scout_main_agent.py --text "开始巡逻，检测到人后停止并触发小车协同跟踪" --dry-run
 ```
 
 真实调度测试，确认现场安全后再执行：
@@ -254,9 +342,11 @@ python3 agent/scout_main_agent.py --text "前进1秒然后停止"
 python3 agent/scout_main_agent.py --text "开始巡逻"
 python3 agent/scout_main_agent.py --text "停止巡逻"
 python3 agent/scout_main_agent.py --text "检查是否检测到人员"
+python3 agent/scout_main_agent.py --text "触发小车协同跟踪"
+python3 agent/scout_main_agent.py --text "开始巡逻，检测到人后停止并触发小车协同跟踪"
 ```
 
-## 7. 最小闭环
+## 8. 最小闭环
 
 按顺序确认：
 
@@ -268,28 +358,52 @@ python3 skills/scout_move_control/scripts/move_control_server.py
 python3 skills/patrol_fixed_points/scripts/patrol.py --status
 python3 skills/patrol_fixed_points/scripts/patrol.py --stop
 python3 skills/check_person_detected/scripts/check_person_detected.py --status
+python3 skills/trigger_existing_tracking_handoff/scripts/trigger_handoff.py --status
 python3 agent/scout_main_agent.py --text "去工位2" --dry-run
 python3 agent/scout_main_agent.py --text "前进1秒然后停止" --dry-run
 python3 agent/scout_main_agent.py --text "开始巡逻" --dry-run
 python3 agent/scout_main_agent.py --text "检查是否检测到人员" --dry-run
+python3 agent/scout_main_agent.py --text "触发小车协同跟踪" --dry-run
 ```
 
 如果 dry-run 正常，再去掉 `--dry-run` 做真实动作测试。
 
-## 8. 新增 skill 后的文档同步流程
+追踪闭环现场命令：
+
+```bash
+# 大车侧：先启动 Sailors 感知和 DDS 发送链路，再启动 adapter skill 检查。
+bash 3sensing_node.bash
+bash 4dds_bridge.sh
+python3 skills/check_person_detected/scripts/check_person_detected.py --check --timeout-seconds 3
+python3 skills/patrol_fixed_points/scripts/patrol.py --run --stop-on-detection true
+python3 skills/trigger_existing_tracking_handoff/scripts/trigger_handoff.py --check --timeout-seconds 3
+
+# 小车侧：确认已有接收和跟踪链路已启动。
+rosrun saw_dds track_converter_pub
+rostopic echo /track_pose
+rostopic echo /cmd_vel
+```
+
+## 9. 新增 skill 后的文档同步流程
 
 每完成一个新的 skill，必须同步更新本文，避免现场调试时找不到命令。
 
-新增 skill 后至少补充：
+如果用户只要求补充启动方式、快速测试或文档同步，只需要先完成最小必填项，不必重新梳理真实接口或补齐所有扩展测试。
+
+最小必填：
 
 1. skill 的启动前置条件，例如依赖哪个 ROS service、topic 或已有 skill。
 2. skill 的最小命令行测试方式。
 3. `--status` 或等价状态查询命令。
-4. 正常输入测试命令。
-5. 异常输入测试命令。
-6. 返回结果中需要重点观察的 `SkillResult` 字段。
-7. agent dry-run 调度命令。
-8. 真实调度命令，且必须注明确认现场安全后再执行。
+4. 必要的安全提示，例如真实动作命令需确认现场安全后再执行。
+
+建议补充：
+
+1. 正常输入测试命令。
+2. 异常输入测试命令。
+3. 返回结果中需要重点观察的 `SkillResult` 字段。
+4. agent dry-run 调度命令。
+5. 真实调度命令，且必须注明确认现场安全后再执行。
 
 建议新增位置：
 
