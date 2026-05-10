@@ -26,6 +26,9 @@ agent:
     patrol_fixed_points:
       execute_seconds: 600
       status_seconds: 15
+    check_person_detected:
+      execute_seconds: 10
+      status_seconds: 5
   confirmation_policy:
     always_confirm_navigation: true
     always_confirm_multi_step_move: true
@@ -100,3 +103,28 @@ skills:
       patrol_points: "逗号分隔巡逻点名称，留空或 default 表示默认路线"
       loop: "是否循环巡逻，当前 Demo 阶段默认 false"
       stop_on_detection: "检测到人员后是否停止巡逻，当前预留，默认 false"
+
+  check_person_detected:
+    enabled: true
+    description: "读取已有人员检测 ROS topic，判断当前是否检测到静态人员，不启动或重写检测模型。"
+    capabilities:
+      - "默认读取 /track_pose，判断是否已有可用于协同下发的人员目标位姿"
+      - "可读取 /DetectMsg，按 person 类别和置信度阈值判断是否检测到人员"
+      - "返回人员检测状态、目标 pose、检测框、topic 和等待超时信息"
+    query_keywords:
+      - "人员检测"
+      - "检测人员"
+      - "有没有人"
+      - "person"
+      - "detect"
+    examples:
+      - "检查是否检测到人员"
+      - "现在有没有检测到人"
+      - "查询人员检测状态"
+    risk_level: low
+    status_supported: true
+    arguments:
+      source: "检测结果来源，支持 track_pose、detect_msg、auto；默认 track_pose"
+      topic: "可选，覆盖默认 topic；track_pose 默认 /track_pose，detect_msg 默认 /DetectMsg"
+      timeout_seconds: "等待检测消息的超时时间，默认 3 秒"
+      confidence_threshold: "读取 /DetectMsg 时的人员置信度阈值，默认 0.5"

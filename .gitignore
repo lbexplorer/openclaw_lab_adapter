@@ -33,6 +33,12 @@ wheels/
 *~
 .DS_Store
 
+# Codex 本地规则文档 - 仅用于本机协作，不上传到版本控制
+docs/codex/
+
+# Demo runtime state
+skills/patrol_fixed_points/patrol_state.json
+
 # ROS 相关
 devel/
 install/

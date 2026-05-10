@@ -164,7 +164,62 @@ python3 skills/patrol_fixed_points/scripts/patrol.py --run --patrol-points "火�
 - `data.failed_waypoint`：失败巡逻点
 - `data.last_navigation_status`：最近一次导航状态
 
-## 5. LLM 调度
+## 5. 人员检测结果读取调试
+
+`check_person_detected` 只读取已有 ROS topic，不启动检测模型。执行前需要先启动 Sailors 感知节点，或启动 toy_utils 检测链路。
+
+启动 Sailors 感知节点：
+
+```bash
+bash 3sensing_node.bash
+```
+
+确认检测相关 topic：
+
+```bash
+rostopic list | grep -E "track|detect|object|camera"
+rostopic echo /track_pose
+```
+
+默认读取 `/track_pose`：
+
+```bash
+python3 skills/check_person_detected/scripts/check_person_detected.py --check
+python3 skills/check_person_detected/scripts/check_person_detected.py --status
+```
+
+读取 toy_utils `/DetectMsg`：
+
+```bash
+python3 skills/check_person_detected/scripts/check_person_detected.py --check --source detect_msg
+```
+
+自定义 topic 和等待时间：
+
+```bash
+python3 skills/check_person_detected/scripts/check_person_detected.py --check \
+  --source track_pose \
+  --topic /track_pose \
+  --timeout-seconds 3
+```
+
+异常输入测试：
+
+```bash
+python3 skills/check_person_detected/scripts/check_person_detected.py --check --source camera
+```
+
+返回结果应为统一 `SkillResult` JSON。重点看：
+
+- `status`：`success / timeout / unavailable / invalid_input`
+- `data.person_detected`：是否检测到人员
+- `data.source`：`track_pose` 或 `detect_msg`
+- `data.source_topic`：实际订阅 topic
+- `data.target_pose`：`/track_pose` 返回的目标位姿
+- `data.detections`：`/DetectMsg` 返回的人员检测框
+- `data.confidence_threshold`：人员置信度阈值
+
+## 6. LLM 调度
 
 先配置模型密钥，可放在项目根目录 `.env`：
 
@@ -188,6 +243,7 @@ python3 agent/scout_main_agent.py --text "去工位2" --dry-run
 python3 agent/scout_main_agent.py --text "前进1秒然后停止" --dry-run
 python3 agent/scout_main_agent.py --text "开始巡逻" --dry-run
 python3 agent/scout_main_agent.py --text "停止巡逻" --dry-run
+python3 agent/scout_main_agent.py --text "检查是否检测到人员" --dry-run
 ```
 
 真实调度测试，确认现场安全后再执行：
@@ -197,9 +253,10 @@ python3 agent/scout_main_agent.py --text "去工位2"
 python3 agent/scout_main_agent.py --text "前进1秒然后停止"
 python3 agent/scout_main_agent.py --text "开始巡逻"
 python3 agent/scout_main_agent.py --text "停止巡逻"
+python3 agent/scout_main_agent.py --text "检查是否检测到人员"
 ```
 
-## 6. 最小闭环
+## 7. 最小闭环
 
 按顺序确认：
 
@@ -210,14 +267,16 @@ python3 skills/scout_navigation_manager/scripts/navigation_manager_server.py --w
 python3 skills/scout_move_control/scripts/move_control_server.py
 python3 skills/patrol_fixed_points/scripts/patrol.py --status
 python3 skills/patrol_fixed_points/scripts/patrol.py --stop
+python3 skills/check_person_detected/scripts/check_person_detected.py --status
 python3 agent/scout_main_agent.py --text "去工位2" --dry-run
 python3 agent/scout_main_agent.py --text "前进1秒然后停止" --dry-run
 python3 agent/scout_main_agent.py --text "开始巡逻" --dry-run
+python3 agent/scout_main_agent.py --text "检查是否检测到人员" --dry-run
 ```
 
 如果 dry-run 正常，再去掉 `--dry-run` 做真实动作测试。
 
-## 7. 新增 skill 后的文档同步流程
+## 8. 新增 skill 后的文档同步流程
 
 每完成一个新的 skill，必须同步更新本文，避免现场调试时找不到命令。
 

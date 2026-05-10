@@ -71,6 +71,9 @@ def check_config_structure(config: dict) -> None:
     patrol_timeout = ((timeout_cfg.get("patrol_fixed_points") or {}).get("execute_seconds"))
     if int(patrol_timeout or 0) < 120:
         fail("patrol_fixed_points.execute_seconds 不应短于单点巡逻等待时间")
+    detection_timeout = ((timeout_cfg.get("check_person_detected") or {}).get("execute_seconds"))
+    if int(detection_timeout or 0) <= 0:
+        fail("check_person_detected.execute_seconds 非法")
     print(f"[OK] max_actions = {agent_cfg.get('max_actions')}")
 
     for name, payload in skills_cfg.items():
@@ -138,6 +141,16 @@ def check_catalog_and_validation(module) -> None:
     stop_command, _, _ = module.build_execution_command("patrol_fixed_points", patrol_stop_args)
     if "--stop" not in stop_command:
         fail("巡逻停止 action 应映射为 patrol.py --stop")
+    detection_args = module.validate_tool_call(
+        "check_person_detected",
+        {"source": "track_pose", "topic": "", "timeout_seconds": "3", "confidence_threshold": "0.5"},
+        skill_catalog,
+    )
+    if detection_args["source"] != "track_pose":
+        fail("人员检测工具参数验证失败")
+    detection_command, _, _ = module.build_execution_command("check_person_detected", detection_args)
+    if "--check" not in detection_command or "--source" not in detection_command:
+        fail("人员检测执行命令应调用 check_person_detected.py --check")
     print("[OK] 合法工具参数验证通过")
 
     try:
@@ -219,6 +232,24 @@ def check_skill_protocol(module) -> None:
     )
     if parsed_patrol.get("skill") != "patrol_fixed_points" or parsed_patrol.get("status") != module.skill_protocol.SkillStatus.SUCCESS:
         fail("巡逻 SkillResult JSON 未被 agent 正确解析")
+    detection_stdout = module.skill_protocol.make_result(
+        skill="check_person_detected",
+        status=module.skill_protocol.SkillStatus.SUCCESS,
+        execution_mode=module.skill_protocol.ExecutionMode.SYNC,
+        message="已检测到人员。",
+        data={"person_detected": True, "source_topic": "/track_pose"},
+    )
+    parsed_detection = module.normalize_process_result(
+        skill_name="check_person_detected",
+        operation="execute",
+        arguments={"source": "track_pose", "topic": "", "timeout_seconds": "3", "confidence_threshold": "0.5"},
+        command=["python", "check_person_detected.py", "--check"],
+        returncode=0,
+        stdout=__import__("json").dumps(detection_stdout, ensure_ascii=False),
+        stderr="",
+    )
+    if parsed_detection.get("skill") != "check_person_detected" or parsed_detection.get("data", {}).get("person_detected") is not True:
+        fail("人员检测 SkillResult JSON 未被 agent 正确解析")
     print("[OK] SkillResult 协议归一化通过")
 
 

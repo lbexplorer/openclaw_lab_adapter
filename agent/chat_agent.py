@@ -167,6 +167,17 @@ def detect_capability_query(user_text: str, skill_catalog: dict[str, dict[str, A
                     "示例：" + "；".join(payload.get("examples") or []),
                 ]
             )
+    if "check_person_detected" in normalized or "人员检测" in normalized or "检测人员" in normalized or "有没有人" in normalized:
+        payload = skill_catalog.get("check_person_detected")
+        if payload:
+            return "\n".join(
+                [
+                    "check_person_detected 可以执行这些操作：",
+                    "；".join(payload.get("capabilities") or []),
+                    "参数说明：" + "；".join(f"{k}={v}" for k, v in (payload.get("arguments") or {}).items()),
+                    "示例：" + "；".join(payload.get("examples") or []),
+                ]
+            )
     if any(pattern in normalized for pattern in CAPABILITY_PATTERNS):
         return core.format_capability_overview(skill_catalog)
     return None

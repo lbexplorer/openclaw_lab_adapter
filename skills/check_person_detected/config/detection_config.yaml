@@ -1,0 +1,7 @@
+default_detection:
+  source: track_pose
+  track_pose_topic: /track_pose
+  detect_msg_topic: /DetectMsg
+  timeout_seconds: 3
+  max_age_seconds: 2
+  confidence_threshold: 0.5
