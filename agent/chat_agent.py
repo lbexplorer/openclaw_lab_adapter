@@ -327,12 +327,12 @@ def append_debug_block(reply: str, debug_lines: list[str], dry_run: bool) -> str
 
 def service_start_hint(skill_name: str) -> str:
     if skill_name == "scout_navigation_manager":
-        return "请先启动导航适配服务 navigation_manager_server.py，并确认 move_base 已正常运行。"
+        return "未确认导航适配服务可用。请确认 navigation_manager_server.py 已启动，并且 move_base 已正常运行；如果刚启动服务，可稍等几秒后重试。"
     if skill_name == "scout_move_control":
-        return "请先启动运动适配服务 move_control_server.py，并确认底盘控制链路已接通。"
+        return "未确认运动适配服务可用。请确认 move_control_server.py 已启动，并且底盘控制链路已接通；如果刚启动服务，可稍等几秒后重试。"
     if skill_name == "patrol_fixed_points":
-        return "请先启动导航适配服务 navigation_manager_server.py，并确认 move_base 已正常运行。"
-    return "请先启动对应的适配服务。"
+        return "未确认巡逻依赖的导航适配服务可用。请确认 navigation_manager_server.py 已启动，并且 move_base 已正常运行；如果刚启动服务，可稍等几秒后重试。"
+    return "未确认对应适配服务可用。请确认服务已启动；如果刚启动服务，可稍等几秒后重试。"
 
 
 def is_status_ready(result: dict[str, Any]) -> bool:
@@ -348,6 +348,51 @@ def is_status_ready(result: dict[str, Any]) -> bool:
     if result.get("skill") == "scout_move_control":
         return raw_status == "stop"
     return True
+
+
+SERVICE_PREFLIGHT_SKILLS = {
+    "scout_navigation_manager",
+    "scout_move_control",
+    "patrol_fixed_points",
+}
+
+
+def should_run_service_preflight(skill_name: str) -> bool:
+    return skill_name in SERVICE_PREFLIGHT_SKILLS
+
+
+def get_service_preflight_config(config: dict[str, Any]) -> tuple[float, float]:
+    agent_cfg = config.get("agent") or {}
+    timeout_seconds = float(agent_cfg.get("service_preflight_timeout_seconds", 20))
+    poll_seconds = float(agent_cfg.get("service_preflight_poll_seconds", 1))
+    return max(timeout_seconds, 0.0), max(poll_seconds, 0.1)
+
+
+def is_transient_service_status(result: dict[str, Any]) -> bool:
+    status = result.get("status")
+    if status in {core.skill_protocol.SkillStatus.UNAVAILABLE, core.skill_protocol.SkillStatus.TIMEOUT}:
+        return True
+    error_code = ((result.get("error") or {}).get("code") or "").upper()
+    return error_code in {"SKILL_UNAVAILABLE", "SKILL_PROCESS_TIMEOUT"}
+
+
+def wait_for_service_preflight(action: PlannedSkillCall, config: dict[str, Any]) -> dict[str, Any]:
+    """Wait briefly for ROS-backed adapter services to become visible to clients."""
+    timeout_seconds, poll_seconds = get_service_preflight_config(config)
+    deadline = time.time() + timeout_seconds
+    last_result: dict[str, Any] | None = None
+
+    while True:
+        result = core.query_skill_status(action.skill_name, config=config, dry_run=False)
+        last_result = result
+        if is_status_ready(result):
+            return result
+        if not is_transient_service_status(result):
+            return result
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return last_result
+        time.sleep(min(poll_seconds, remaining))
 
 
 def update_robot_state_for_action(state: RobotState, action: PlannedSkillCall) -> RobotState:
@@ -441,7 +486,7 @@ def wait_for_async_completion(
     last_status = initial_result
     while time.time() < deadline:
         time.sleep(min(poll_seconds, max(deadline - time.time(), 0.0)))
-        status_result = core.query_skill_status(action.skill_name, dry_run=False)
+        status_result = core.query_skill_status(action.skill_name, config=config, dry_run=False)
         last_status = status_result
         raw_status = str(status_result.get("data", {}).get("raw_status", "")).strip().lower()
 
@@ -517,8 +562,8 @@ def execute_actions_with_guard(
     messages.append(normalize_assistant_message(assistant_message))
 
     for index, action in enumerate(actions):
-        if not dry_run:
-            status_result = core.query_skill_status(action.skill_name, dry_run=False)
+        if not dry_run and should_run_service_preflight(action.skill_name):
+            status_result = wait_for_service_preflight(action, config)
             if not is_status_ready(status_result):
                 return {
                     "assistant_reply": append_debug_block(service_start_hint(action.skill_name), debug_lines or [], dry_run),

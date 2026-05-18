@@ -323,6 +323,19 @@ def check_timeout_and_progress(module) -> None:
     print("[OK] 超时与进度记录通过")
 
 
+def check_service_wait_failure_classification(module) -> None:
+    status, code, detail = module.skill_protocol.classify_process_failure(
+        1,
+        "",
+        "rospy.ROSException: timeout exceeded while waiting for service /scout_move_control/move_status",
+    )
+    if status != module.skill_protocol.SkillStatus.UNAVAILABLE:
+        fail("ROS service 等待超时应归类为 unavailable")
+    if code != "SKILL_UNAVAILABLE" or "waiting for service" not in detail:
+        fail("ROS service 等待超时应保留 SKILL_UNAVAILABLE 错误码和细节")
+    print("[OK] service 等待失败分类通过")
+
+
 def check_confirmation_policy(module) -> None:
     config = module.load_agent_config(CONFIG_PATH)
     skill_catalog = module.build_skill_catalog(config, module.load_waypoint_names())
@@ -359,6 +372,7 @@ def main() -> None:
     check_catalog_and_validation(module)
     check_skill_protocol(module)
     check_timeout_and_progress(module)
+    check_service_wait_failure_classification(module)
     check_confirmation_policy(module)
     print("[OK] scout_main_agent 静态测试通过")
 

@@ -1,12 +1,23 @@
-# Scout 桥接快速开始
+# Scout 桥接调试快速开始
 
-本文只保留现场调试最常用的启动和测试命令。完整排查细节见 `skills调试.md`。
+本文是 `docs/debug/` 下的现场调试主入口，合并原 `skills调试.md` 中重复的启动、skill 测试和最小闭环命令。
 
-默认项目目录：
+默认约定：
+
+- 车端 adapter 项目目录用 `$ADAPTER_WS` 表示，常见值为 `/ssd1/workspace/openclaw_lab_adapter`。
+- Sailors 工作空间用 `$SAILORS_WS` 表示，常见值为 `/ssd1/workspace/sailors_onboard`。
+- 仓库内文件统一使用相对路径，例如 `skills/scout_navigation_manager/config/navigation_position.yaml`。
+- Windows 本机路径不要写入文档或命令；需要同步到车端时，在仓库根目录执行 `scp -r . user@host:/target/openclaw_lab_adapter/`。
+
+基础环境：
 
 ```bash
-cd /ssd1/workspace/openclaw_lab_adapter
+export ADAPTER_WS=/ssd1/workspace/openclaw_lab_adapter
+export SAILORS_WS=/ssd1/workspace/sailors_onboard
+
+cd "$ADAPTER_WS"
 source /opt/ros/noetic/setup.bash
+source "$SAILORS_WS/build/devel/setup.bash"
 ```
 
 ## 1. 小车启动
@@ -14,8 +25,9 @@ source /opt/ros/noetic/setup.bash
 终端 1：启动底盘、传感器和基础驱动。
 
 ```bash
-cd /ssd1/workspace/openclaw_lab_adapter
+cd "$ADAPTER_WS"
 source /opt/ros/noetic/setup.bash
+source "$SAILORS_WS/build/devel/setup.bash"
 bash 1startup.bash
 ```
 
@@ -28,8 +40,9 @@ rostopic list | grep -E "/scan|/imu|/odom|/cmd_vel"
 终端 2：启动地图、定位和导航。
 
 ```bash
-cd /ssd1/workspace/openclaw_lab_adapter
+cd "$ADAPTER_WS"
 source /opt/ros/noetic/setup.bash
+source "$SAILORS_WS/build/devel/setup.bash"
 bash 2nav.bash
 ```
 
@@ -42,11 +55,21 @@ rostopic list | grep move_base
 
 ## 2. 桥接启动
 
+如果已经手动启动并确认 `1startup.bash`、`2nav.bash`，可以用 Terminator 一次打开两个 adapter skill 窗口：
+
+```bash
+cd "$ADAPTER_WS"
+bash scripts/launch_skills_terminator.sh
+```
+
+这个脚本只启动 `navigation_manager_server.py` 和 `move_control_server.py`，不会启动底层驱动、地图、定位或导航服务。底层服务仍需要按第 1 节先完成现场安全确认。
+
 终端 3：启动命名地点导航 skill。
 
 ```bash
-cd /ssd1/workspace/openclaw_lab_adapter
+cd "$ADAPTER_WS"
 source /opt/ros/noetic/setup.bash
+source "$SAILORS_WS/build/devel/setup.bash"
 python3 skills/scout_navigation_manager/scripts/navigation_manager_server.py \
   --waypoints skills/scout_navigation_manager/config/navigation_position.yaml
 ```
@@ -54,8 +77,9 @@ python3 skills/scout_navigation_manager/scripts/navigation_manager_server.py \
 终端 4：启动底盘动作 skill。
 
 ```bash
-cd /ssd1/workspace/openclaw_lab_adapter
+cd "$ADAPTER_WS"
 source /opt/ros/noetic/setup.bash
+source "$SAILORS_WS/build/devel/setup.bash"
 python3 skills/scout_move_control/scripts/move_control_server.py
 ```
 
@@ -84,10 +108,11 @@ PY
 
 ```bash
 python3 skills/scout_navigation_manager/scripts/navigate.py --go 原点
-python3 skills/scout_navigation_manager/scripts/navigate.py --go "巡逻点二"
+python3 skills/scout_navigation_manager/scripts/navigate.py --go "巡逻点三"
 python3 skills/scout_navigation_manager/scripts/navigate.py --go "工位2"
 python3 skills/scout_navigation_manager/scripts/navigate.py --cancel
 python3 skills/scout_navigation_manager/scripts/navigate.py --go "去火星基地"
+python3 skills/scout_navigation_manager/scripts/navigate.py --go "巡逻点四"
 ```
 
 ROS service 测试：
@@ -146,7 +171,7 @@ python3 skills/patrol_fixed_points/scripts/patrol.py --run
 
 ```bash
 python3 skills/patrol_fixed_points/scripts/patrol.py --run \
-  --patrol-points "原点,巡逻点2,巡逻点3,巡逻点4,原点"
+  --patrol-points "巡逻点4,原点"
 ```
 
 异常输入测试：
@@ -229,7 +254,7 @@ python3 skills/check_person_detected/scripts/check_person_detected.py --check --
 
 ```bash
 source /opt/ros/noetic/setup.bash
-source /ssd1/workspace/sailors_onboard/build/devel/setup.bash
+source "$SAILORS_WS/build/devel/setup.bash"
 
 # 启动人员目标位姿来源。现场如果已有 3sensing_node.bash，可优先使用脚本。
 bash 3sensing_node.bash
@@ -242,7 +267,7 @@ bash 4dds_bridge.sh
 
 ```bash
 source /opt/ros/noetic/setup.bash
-source /ssd1/workspace/sailors_onboard/build/devel/setup.bash
+source "$SAILORS_WS/build/devel/setup.bash"
 rosrun perception sensing_node
 rosrun saw_dds track_converter_sub
 ```
@@ -251,7 +276,7 @@ rosrun saw_dds track_converter_sub
 
 ```bash
 source /opt/ros/noetic/setup.bash
-source /ssd1/workspace/sailors_onboard/build/devel/setup.bash
+source "$SAILORS_WS/build/devel/setup.bash"
 rosrun saw_dds track_converter_pub
 rostopic echo /track_pose
 ```
@@ -260,7 +285,7 @@ rostopic echo /track_pose
 
 ```bash
 source /opt/ros/noetic/setup.bash
-source /ssd1/workspace/sailors_onboard/build/devel/setup.bash
+source "$SAILORS_WS/build/devel/setup.bash"
 roslaunch perception_toy detection_tracking.launch
 roslaunch planner_toy track_planner.launch
 rostopic echo /DetectMsg
@@ -271,7 +296,7 @@ rostopic echo /cmd_vel
 大车侧确认目标已经进入现有交接链路：
 
 ```bash
-cd /ssd1/workspace/openclaw_lab_adapter
+cd "$ADAPTER_WS"
 source /opt/ros/noetic/setup.bash
 python3 skills/trigger_existing_tracking_handoff/scripts/trigger_handoff.py --status
 python3 skills/trigger_existing_tracking_handoff/scripts/trigger_handoff.py --check \
@@ -315,9 +340,16 @@ OPENCLAW_LLM_BASE_URL=https://api.moonshot.cn/v1
 OPENCLAW_LLM_MODEL=kimi-k2.5
 ```
 
+用 Terminator 启动交互式大模型调度入口：
+
+```bash
+bash scripts/launch_agent_terminator.sh
+```
+
 查看 agent 能力：
 
 ```bash
+python3 agent/chat_agent.py
 python3 agent/chat_agent.py --show-capabilities
 python3 agent/scout_main_agent.py --list-skills
 ```

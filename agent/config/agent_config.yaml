@@ -14,6 +14,8 @@ agent:
   max_actions: 3
   async_result_timeout_seconds: 10
   async_result_poll_seconds: 1
+  service_preflight_timeout_seconds: 20
+  service_preflight_poll_seconds: 1
   skill_timeouts:
     default_execute_seconds: 60
     default_status_seconds: 15

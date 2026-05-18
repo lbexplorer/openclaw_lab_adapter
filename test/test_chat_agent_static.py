@@ -73,7 +73,7 @@ def install_fake_llm(module, responses: list[dict]) -> None:
 
 
 def install_fake_execution(module) -> None:
-    module.core.query_skill_status = lambda skill_name, dry_run=False: module.core.skill_protocol.make_result(
+    module.core.query_skill_status = lambda skill_name, config=None, dry_run=False: module.core.skill_protocol.make_result(
         skill=skill_name,
         status=module.core.skill_protocol.SkillStatus.ACCEPTED
         if dry_run
@@ -94,7 +94,7 @@ def install_fake_execution(module) -> None:
 
 
 def install_fake_navigation_failure(module) -> None:
-    module.core.query_skill_status = lambda skill_name, dry_run=False: module.core.skill_protocol.make_result(
+    module.core.query_skill_status = lambda skill_name, config=None, dry_run=False: module.core.skill_protocol.make_result(
         skill=skill_name,
         status=module.core.skill_protocol.SkillStatus.SUCCESS,
         execution_mode=module.core.skill_protocol.ExecutionMode.SYNC,
@@ -298,6 +298,71 @@ def check_invalid_tool_call_fallback(module) -> None:
     print("[OK] 非法 tool call 回退通过")
 
 
+def check_service_preflight_retry(module) -> None:
+    config = module.core.load_agent_config()
+    config.setdefault("agent", {})
+    config["agent"]["service_preflight_timeout_seconds"] = 1
+    config["agent"]["service_preflight_poll_seconds"] = 0.1
+    skill_catalog = module.core.build_skill_catalog(config, module.core.load_waypoint_names())
+    state = module.RobotState()
+    attempts = {"count": 0}
+
+    def fake_query_skill_status(skill_name, config=None, dry_run=False):
+        del config, dry_run
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return module.core.skill_protocol.make_result(
+                skill=skill_name,
+                status=module.core.skill_protocol.SkillStatus.UNAVAILABLE,
+                execution_mode=module.core.skill_protocol.ExecutionMode.SYNC,
+                message="service not visible yet",
+                data={"raw_status": ""},
+                error_code="SKILL_UNAVAILABLE",
+                error_message="timeout exceeded while waiting for service",
+            )
+        return module.core.skill_protocol.make_result(
+            skill=skill_name,
+            status=module.core.skill_protocol.SkillStatus.SUCCESS,
+            execution_mode=module.core.skill_protocol.ExecutionMode.SYNC,
+            message="ready",
+            data={"raw_status": "ready"},
+        )
+
+    module.core.query_skill_status = fake_query_skill_status
+    install_fake_llm(module, [make_llm_response(content="导航请求已执行。")])
+    module.core.execute_action = lambda skill_name, arguments, dry_run=False: module.core.skill_protocol.make_result(
+        skill=skill_name,
+        status=module.core.skill_protocol.SkillStatus.SUCCESS,
+        execution_mode=module.core.skill_protocol.ExecutionMode.ASYNC,
+        message="ok",
+        data={"arguments": arguments, "dry_run": dry_run},
+    )
+    action = module.PlannedSkillCall(
+        skill_name="scout_navigation_manager",
+        arguments={"target": "工位2"},
+        summary="导航到工位2",
+    )
+    result = module.execute_actions_with_guard(
+        [action],
+        state,
+        [],
+        "带我去工位2",
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [tool_call("call_nav_retry", "scout_navigation_manager", {"target": "工位2"})],
+        },
+        config,
+        skill_catalog,
+        dry_run=False,
+    )
+    if attempts["count"] < 2:
+        fail("服务预检未对临时不可用状态进行重试")
+    if result["executed_results"][-1].get("status") != module.core.skill_protocol.SkillStatus.SUCCESS:
+        fail("服务预检重试成功后应继续执行 action")
+    print("[OK] 服务预检重试通过")
+
+
 def main() -> None:
     check_files()
     module = load_module(SCRIPT_PATH, "chat_agent_module")
@@ -305,6 +370,7 @@ def main() -> None:
     check_capability_queries(module)
     check_confirmation_and_execution(module)
     check_invalid_tool_call_fallback(module)
+    check_service_preflight_retry(module)
     print("[OK] chat_agent 静态测试通过")
 
 

@@ -1,52 +1,75 @@
 # Test
 
-当前目录用于放置 `openclaw_lab_adapter` 的本地测试脚本。
+`test/` 放置本仓库的本地静态测试脚本，主要验证 agent、skills 配置、命令解析和接口封装的结构正确性。
 
-## scout_navigation_manager 静态测试
+这些测试不启动真实 ROS 节点，不控制无人车，也不替代现场联调。涉及真实导航、底盘动作、人员检测和协同交接的验证仍以 `docs/debug/scout_bridge_quickstart_cn.md` 中的现场流程为准。
 
-在项目根目录执行：
-
-```bash
-python test/test_scout_navigation_static.py
-```
-
-这个脚本会自动检查：
-
-- `skills/scout_navigation_manager/scripts/` 下脚本是否存在
-- `navigation_position.yaml` 是否存在、结构是否正确
-- 每个地点是否包含 `x / y / orientation.x/y/z/w`
-- `aliases` 是否是字符串列表
-- 自然语言短句是否能解析到预期标准地点名
-
-推荐从 `openclaw_lab_adapter` 根目录运行，这样输出路径最直观。
-
-## scout_main_agent 静态测试
+## 一次性运行
 
 在项目根目录执行：
 
-```bash
-python test/test_scout_main_agent_static.py
+```powershell
+Get-ChildItem test -Filter test_*.py | ForEach-Object { python $_.FullName }
 ```
 
-这个脚本会自动检查：
-
-- `agent/` 目录是否完整
-- `agent_config.yaml` 是否存在且结构正确
-- Kimi/OpenAI 兼容工具定义是否能正确生成
-- 工具参数校验是否能接受合法 skill 调用
-- 非法地点是否会被正确拒绝
-
-## chat_agent 静态测试
-
-在项目根目录执行：
+Linux / ROS 车端环境可使用：
 
 ```bash
-python test/test_chat_agent_static.py
+for f in test/test_*.py; do python3 "$f"; done
 ```
 
-这个脚本会自动检查：
+## 单项测试
 
-- `agent/chat_agent.py` 是否存在
-- 常见中文动作命令是否能转换为底盘 command
-- 常见导航短句是否能解析到已有命名点
-- 未知地点、能力查询、超范围请求是否返回预期文本
+### `test_scout_navigation_static.py`
+
+检查 `scout_navigation_manager` 脚本、`navigation_position.yaml` 结构、地点坐标和别名解析。
+
+```bash
+python3 test/test_scout_navigation_static.py
+```
+
+### `test_scout_main_agent_static.py`
+
+检查 `scout_main_agent.py`、agent 配置、工具定义、参数校验和非法输入拒绝逻辑。
+
+```bash
+python3 test/test_scout_main_agent_static.py
+```
+
+### `test_chat_agent_static.py`
+
+检查 `chat_agent.py` 的能力展示、中文动作解析、导航短句解析、未知地点和超范围请求处理。
+
+```bash
+python3 test/test_chat_agent_static.py
+```
+
+### `test_patrol_fixed_points_static.py`
+
+检查固定点巡逻配置、巡逻脚本入口、状态字段和异常输入处理。
+
+```bash
+python3 test/test_patrol_fixed_points_static.py
+```
+
+### `test_check_person_detected_static.py`
+
+检查人员检测结果读取 skill 的配置、topic 来源、状态字段和异常输入处理。
+
+```bash
+python3 test/test_check_person_detected_static.py
+```
+
+### `test_trigger_existing_tracking_handoff_static.py`
+
+检查协同交接确认 skill 的配置、DDS / `/track_pose` 边界、状态字段和异常输入处理。
+
+```bash
+python3 test/test_trigger_existing_tracking_handoff_static.py
+```
+
+## 预期用途
+
+- 提交前快速检查配置和静态逻辑。
+- 文档整理或 agent 路由修改后确认入口没有断裂。
+- 现场联调前先排除明显的本仓库结构问题。

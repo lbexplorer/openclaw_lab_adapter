@@ -12,26 +12,27 @@
 -> 小车执行静态人员跟踪
 ```
 
-本文件是项目说明索引，不作为每次任务必须完整读取的大文档。每次任务优先读取：
+本文件是项目说明索引，不作为日常任务必读入口。当前 Codex 工作入口为：
 
 ```text
 AGENTS.md
-docs/codex/02_TASK_ROUTER.md
 ```
 
-然后根据任务类型读取对应专题文档和相关代码。
+当任务不明显、涉及代码行为、接口、agent、skill、测试或跨模块判断时，再读取 `docs/codex/02_TASK_ROUTER.md`。随后只读取目标文件和必要上下文。
 
 ## 专题文档索引
 
 - `docs/codex/00_PROJECT_BRIEF.md`：项目定位、Demo 主线、当前阶段能力边界和最高优先级原则。
 - `docs/codex/01_REPO_BOUNDARIES.md`：`sailors_onboard-main`、`openclaw`、`openclaw_lab_adapter` 的角色和修改边界。
-- `docs/codex/02_TASK_ROUTER.md`：按任务类型决定应读取哪些文档和代码，是 Codex 每次任务的主要路由入口；只负责指导读什么、改什么、避开什么。
+- `docs/codex/02_TASK_ROUTER.md`：轻量任务路由表；只在任务需要时帮助判断读什么、改什么、何时升级风险。
 - `docs/codex/03_SKILL_CONTRACT.md`：skill 的职责、边界、输入输出、成功失败判断和建议 skill 范围。
 - `docs/codex/04_AGENT_CONTRACT.md`：agent 的职责、默认执行主线、skill 调用规则和缺失能力处理原则。
 - `docs/codex/05_ROS_DDS_NAVIGATION_NOTES.md`：ROS / DDS / 导航 / 跟踪接口的谨慎规则和安全边界。
 - `docs/codex/06_WORKFLOWS.md`：简单任务、复杂任务、Plan mode 适配、确认要求、上下文阅读和验证方式。
 - `docs/codex/07_ACCEPTANCE_CRITERIA.md`：当前阶段 Demo 的验收标准。
 - `docs/codex/08_OUTPUT_TEMPLATES.md`：简单任务、复杂任务和普通模式下复杂任务修改前计划的输出格式。
+
+上述专题文档保留为参考资料，不再作为默认连续阅读链路。后续项目进度以 `docs/log/DEVELOPMENT_LOG.md` 为事实源。
 
 ## 核心提醒
 
