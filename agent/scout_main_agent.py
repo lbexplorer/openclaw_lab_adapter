@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib.util
 import json
 import os
@@ -29,8 +30,14 @@ CONFIG_PATH = AGENT_DIR / "config" / "agent_config.yaml"
 ENV_PATH = ROOT_DIR / ".env"
 NAVIGATE_REL_PATH = Path("skills") / "scout_navigation_manager" / "scripts" / "navigate.py"
 MOVE_CLIENT_REL_PATH = Path("skills") / "scout_move_control" / "scripts" / "move_control_client.py"
+PATROL_REL_PATH = Path("skills") / "patrol_fixed_points" / "scripts" / "patrol.py"
+CHECK_PERSON_REL_PATH = Path("skills") / "check_person_detected" / "scripts" / "check_person_detected.py"
+HANDOFF_REL_PATH = Path("skills") / "trigger_existing_tracking_handoff" / "scripts" / "trigger_handoff.py"
 NAVIGATE_PATH = ROOT_DIR / NAVIGATE_REL_PATH
 MOVE_CLIENT_PATH = ROOT_DIR / MOVE_CLIENT_REL_PATH
+PATROL_PATH = ROOT_DIR / PATROL_REL_PATH
+CHECK_PERSON_PATH = ROOT_DIR / CHECK_PERSON_REL_PATH
+HANDOFF_PATH = ROOT_DIR / HANDOFF_REL_PATH
 NAVIGATION_CONFIG_PATH = ROOT_DIR / "skills" / "scout_navigation_manager" / "config" / "navigation_position.yaml"
 MOVE_COMMAND_PATTERN = re.compile(r"^(forward|backward|left|right|stop)\s+(\d+(?:\.\d+)?)$")
 
@@ -38,6 +45,7 @@ MOVE_COMMAND_PATTERN = re.compile(r"^(forward|backward|left|right|stop)\s+(\d+(?
 def ensure_stdout_encoding() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except AttributeError:
         pass
 
@@ -203,10 +211,15 @@ def build_system_prompt(skill_catalog: dict[str, dict[str, Any]], max_actions: i
         规则:
         1. 查询能力、参数说明、地点列表、最近状态时，不要调用工具，直接用中文回答。
         2. 导航类请求优先调用 scout_navigation_manager。
-        3. 底盘动作请求调用 scout_move_control。
-        4. command 必须是英文动作字符串，支持单条或逗号分隔的动作序列，例如 `forward 1` 或 `forward 1, left 1`。
-        5. target 必须是可用地点中的标准地点名。
-        6. 如果请求超出已知能力，不要调用工具，直接用中文简短说明当前无法执行。
+        3. 固定点巡逻请求调用 patrol_fixed_points，开始巡逻 action=run，查询巡逻 action=status，停止巡逻或停止当前巡逻导航 action=stop。
+        4. 人员检测查询请求调用 check_person_detected；默认 source=track_pose。
+        5. 协同交接请求调用 trigger_existing_tracking_handoff；它只确认现有 /track_pose 交接链路，不主动发布目标。
+        6. 协同 Demo 巡逻请求可调用 patrol_fixed_points，并将 stop_on_detection 设为 true。
+        7. 底盘动作请求调用 scout_move_control。
+        8. command 必须是英文动作字符串，支持单条或逗号分隔的动作序列，例如 `forward 1` 或 `forward 1, left 1`。
+        9. target 必须是可用地点中的标准地点名。
+        10. patrol_points 为空或 default 时表示默认巡逻路线；action 默认 run；loop 默认 false。
+        11. 如果请求超出已知能力，不要调用工具，直接用中文简短说明当前无法执行。
         """
     ).strip()
 
@@ -303,6 +316,50 @@ def validate_tool_call(skill_name: str, arguments: dict[str, Any], skill_catalog
         split_move_command_segments(command)
         return {"command": command}
 
+    if skill_name == "patrol_fixed_points":
+        action = str(arguments.get("action", "run")).strip().lower() or "run"
+        if action not in {"run", "status", "stop"}:
+            raise ValueError(f"unsupported patrol action: {action}")
+        patrol_points = str(arguments.get("patrol_points", "")).strip()
+        if patrol_points.lower() == "default":
+            patrol_points = ""
+        loop = str(arguments.get("loop", "false")).strip() or "false"
+        stop_on_detection = str(arguments.get("stop_on_detection", "false")).strip() or "false"
+        return {
+            "action": action,
+            "patrol_points": patrol_points,
+            "loop": loop,
+            "stop_on_detection": stop_on_detection,
+        }
+
+    if skill_name == "check_person_detected":
+        source = str(arguments.get("source", "track_pose")).strip().lower() or "track_pose"
+        if source not in {"track_pose", "detect_msg", "auto"}:
+            raise ValueError(f"unsupported detection source: {source}")
+        topic = str(arguments.get("topic", "")).strip()
+        timeout_seconds = str(arguments.get("timeout_seconds", "3")).strip() or "3"
+        confidence_threshold = str(arguments.get("confidence_threshold", "0.5")).strip() or "0.5"
+        return {
+            "source": source,
+            "topic": topic,
+            "timeout_seconds": timeout_seconds,
+            "confidence_threshold": confidence_threshold,
+        }
+
+    if skill_name == "trigger_existing_tracking_handoff":
+        action = str(arguments.get("action", "check")).strip().lower() or "check"
+        if action not in {"check", "status"}:
+            raise ValueError(f"unsupported handoff action: {action}")
+        topic = str(arguments.get("topic", "")).strip()
+        timeout_seconds = str(arguments.get("timeout_seconds", "3")).strip() or "3"
+        require_subscriber = str(arguments.get("require_subscriber", "false")).strip() or "false"
+        return {
+            "action": action,
+            "topic": topic,
+            "timeout_seconds": timeout_seconds,
+            "require_subscriber": require_subscriber,
+        }
+
     raise ValueError(f"no validator for skill: {skill_name}")
 
 
@@ -354,7 +411,84 @@ def summarize_action(skill_name: str, arguments: dict[str, Any]) -> str:
         return f"导航到{arguments['target']}"
     if skill_name == "scout_move_control":
         return f"执行底盘动作 {arguments['command']}"
+    if skill_name == "patrol_fixed_points":
+        action = arguments.get("action", "run")
+        if action == "stop":
+            return "停止固定点巡逻"
+        if action == "status":
+            return "查询固定点巡逻状态"
+        points = arguments.get("patrol_points") or "默认路线"
+        return f"执行固定点巡逻 {points}"
+    if skill_name == "check_person_detected":
+        source = arguments.get("source", "track_pose")
+        return f"查询人员检测结果 {source}"
+    if skill_name == "trigger_existing_tracking_handoff":
+        action = arguments.get("action", "check")
+        return "确认现有小车协同交接链路" if action == "check" else "查询现有协同交接状态"
     return f"执行 {skill_name}"
+
+
+def utc_timestamp() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def format_command(command: list[str], max_length: int = 160) -> str:
+    text = " ".join(str(part) for part in command)
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3] + "..."
+
+
+def emit_progress(line: str) -> None:
+    print(line, file=sys.stderr, flush=True)
+
+
+def progress_icon(status: str) -> str:
+    if status in {skill_protocol.SkillStatus.SUCCESS, skill_protocol.SkillStatus.ACCEPTED}:
+        return "✅"
+    if status in {skill_protocol.SkillStatus.RUNNING}:
+        return "🔄"
+    return "❌"
+
+
+def build_step_record(
+    index: int,
+    skill_name: str,
+    arguments: dict[str, Any],
+    operation: str,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    return {
+        "index": index,
+        "skill": skill_name,
+        "operation": operation,
+        "arguments": arguments,
+        "summary": summarize_action(skill_name, arguments),
+        "status": skill_protocol.SkillStatus.RUNNING,
+        "message": "skill is running.",
+        "started_at": utc_timestamp(),
+        "finished_at": "",
+        "timeout_seconds": timeout_seconds,
+        "result": None,
+    }
+
+
+def emit_step_started(step: dict[str, Any], command: list[str]) -> None:
+    if step["index"] == 1:
+        emit_progress("调用工具")
+    emit_progress("🔄 [%d] 调用 skill：%s" % (step["index"], step["skill"]))
+    emit_progress("    操作：%s" % step["summary"])
+    emit_progress("    命令：%s" % format_command(command))
+    emit_progress("    状态：running，超时：%.0fs" % step["timeout_seconds"])
+
+
+def emit_step_finished(step: dict[str, Any]) -> None:
+    status = str(step.get("status", ""))
+    icon = progress_icon(status)
+    label = "skill 完成" if status in {skill_protocol.SkillStatus.SUCCESS, skill_protocol.SkillStatus.ACCEPTED} else "skill 失败"
+    emit_progress("%s [%d] %s：%s" % (icon, step["index"], label, step["skill"]))
+    emit_progress("    结果：%s" % status)
+    emit_progress("    消息：%s" % step.get("message", ""))
 
 
 def call_chat_completion(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
@@ -393,8 +527,28 @@ def call_chat_completion(payload: dict[str, Any], config: dict[str, Any]) -> dic
     return raw
 
 
-def execute_action(skill_name: str, arguments: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
+def get_skill_timeout(config: dict[str, Any], skill_name: str, operation: str) -> float:
+    agent_cfg = config.get("agent") or {}
+    timeout_cfg = dict(agent_cfg.get("skill_timeouts") or {})
+    default_key = "default_status_seconds" if operation == "status" else "default_execute_seconds"
+    skill_key = "status_seconds" if operation == "status" else "execute_seconds"
+    default_seconds = float(timeout_cfg.get(default_key, 15 if operation == "status" else 60))
+    skill_cfg = timeout_cfg.get(skill_name) or {}
+    if not isinstance(skill_cfg, dict):
+        return default_seconds
+    return float(skill_cfg.get(skill_key, default_seconds))
+
+
+def execute_action(
+    skill_name: str,
+    arguments: dict[str, Any],
+    config: dict[str, Any] | None = None,
+    dry_run: bool = False,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     command, script_path, script_rel_path = build_execution_command(skill_name, arguments)
+    if timeout_seconds is None:
+        timeout_seconds = get_skill_timeout(config or {}, skill_name, "execute")
     return run_skill_command(
         skill_name,
         command,
@@ -403,6 +557,7 @@ def execute_action(skill_name: str, arguments: dict[str, Any], dry_run: bool = F
         arguments,
         dry_run=dry_run,
         operation="execute",
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -415,6 +570,56 @@ def build_execution_command(skill_name: str, arguments: dict[str, Any]) -> tuple
         script_path = MOVE_CLIENT_PATH
         script_rel_path = MOVE_CLIENT_REL_PATH
         command = [sys.executable, str(script_rel_path), "--cmd", arguments["command"]]
+    elif skill_name == "patrol_fixed_points":
+        script_path = PATROL_PATH
+        script_rel_path = PATROL_REL_PATH
+        action = arguments.get("action", "run")
+        if action == "stop":
+            command = [sys.executable, str(script_rel_path), "--stop"]
+        elif action == "status":
+            command = [sys.executable, str(script_rel_path), "--status"]
+        else:
+            command = [
+                sys.executable,
+                str(script_rel_path),
+                "--run",
+                "--patrol-points",
+                arguments.get("patrol_points", ""),
+                "--loop",
+                arguments.get("loop", "false"),
+                "--stop-on-detection",
+                arguments.get("stop_on_detection", "false"),
+            ]
+    elif skill_name == "check_person_detected":
+        script_path = CHECK_PERSON_PATH
+        script_rel_path = CHECK_PERSON_REL_PATH
+        command = [
+            sys.executable,
+            str(script_rel_path),
+            "--check",
+            "--source",
+            arguments.get("source", "track_pose"),
+            "--timeout-seconds",
+            arguments.get("timeout_seconds", "3"),
+            "--confidence-threshold",
+            arguments.get("confidence_threshold", "0.5"),
+        ]
+        if arguments.get("topic"):
+            command.extend(["--topic", arguments["topic"]])
+    elif skill_name == "trigger_existing_tracking_handoff":
+        script_path = HANDOFF_PATH
+        script_rel_path = HANDOFF_REL_PATH
+        command = [
+            sys.executable,
+            str(script_rel_path),
+            "--status" if arguments.get("action") == "status" else "--check",
+            "--timeout-seconds",
+            arguments.get("timeout_seconds", "3"),
+            "--require-subscriber",
+            arguments.get("require_subscriber", "false"),
+        ]
+        if arguments.get("topic"):
+            command.extend(["--topic", arguments["topic"]])
     else:
         raise ValueError(f"unsupported execution skill: {skill_name}")
 
@@ -429,8 +634,11 @@ def run_skill_command(
     arguments: dict[str, Any],
     dry_run: bool = False,
     operation: str = "execute",
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     del script_rel_path
+    if timeout_seconds is None:
+        timeout_seconds = 15 if operation == "status" else 60
     if not script_path.exists():
         return skill_protocol.make_result(
             skill=skill_name,
@@ -439,7 +647,7 @@ def run_skill_command(
             message=f"skill script not found: {script_path}",
             error_code="SKILL_SCRIPT_NOT_FOUND",
             error_message=f"skill script not found: {script_path}",
-            trace={"command": command, "cwd": str(ROOT_DIR)},
+            trace={"command": command, "cwd": str(ROOT_DIR), "timeout_seconds": timeout_seconds},
         )
 
     if dry_run:
@@ -449,16 +657,42 @@ def run_skill_command(
             execution_mode=get_execution_mode(skill_name, operation),
             message="dry-run: skill command validated but not executed.",
             data={"arguments": arguments, "dry_run": True},
-            trace={"command": command, "cwd": str(ROOT_DIR)},
+            trace={"command": command, "cwd": str(ROOT_DIR), "timeout_seconds": timeout_seconds},
         )
 
-    completed = subprocess.run(
-        command,
-        cwd=str(ROOT_DIR),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        message = "skill execution exceeded %.0f seconds: %s" % (timeout_seconds, skill_name)
+        return skill_protocol.make_result(
+            skill=skill_name,
+            status=skill_protocol.SkillStatus.TIMEOUT,
+            execution_mode=get_execution_mode(skill_name, operation),
+            message=message,
+            data={"arguments": arguments},
+            error_code="SKILL_PROCESS_TIMEOUT",
+            error_message=message,
+            trace={
+                "command": command,
+                "cwd": str(ROOT_DIR),
+                "timeout_seconds": timeout_seconds,
+                "stdout": str(stdout).strip(),
+                "stderr": str(stderr).strip(),
+            },
+        )
     return normalize_process_result(
         skill_name=skill_name,
         operation=operation,
@@ -467,6 +701,7 @@ def run_skill_command(
         returncode=completed.returncode,
         stdout=completed.stdout.strip(),
         stderr=completed.stderr.strip(),
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -486,6 +721,7 @@ def normalize_process_result(
     returncode: int,
     stdout: str,
     stderr: str,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     trace = {
         "command": command,
@@ -494,7 +730,21 @@ def normalize_process_result(
         "stdout": stdout,
         "stderr": stderr,
     }
+    if timeout_seconds is not None:
+        trace["timeout_seconds"] = timeout_seconds
     execution_mode = get_execution_mode(skill_name, operation)
+
+    parsed = parse_skill_result_json(stdout)
+    if parsed is not None:
+        parsed.setdefault("trace", {})
+        parsed["trace"].setdefault("command", command)
+        parsed["trace"].setdefault("cwd", str(ROOT_DIR))
+        parsed["trace"].setdefault("returncode", returncode)
+        parsed["trace"].setdefault("stdout", stdout)
+        parsed["trace"].setdefault("stderr", stderr)
+        if timeout_seconds is not None:
+            parsed["trace"].setdefault("timeout_seconds", timeout_seconds)
+        return parsed
 
     if returncode != 0:
         status, code, detail = skill_protocol.classify_process_failure(returncode, stdout, stderr)
@@ -568,7 +818,21 @@ def normalize_process_result(
     )
 
 
-def query_skill_status(skill_name: str, dry_run: bool = False) -> dict[str, Any]:
+def parse_skill_result_json(stdout: str) -> dict[str, Any] | None:
+    text = (stdout or "").strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    required = {"skill", "status", "execution_mode", "message", "data", "error", "trace"}
+    if not isinstance(payload, dict) or not required.issubset(payload.keys()):
+        return None
+    return payload
+
+
+def query_skill_status(skill_name: str, config: dict[str, Any] | None = None, dry_run: bool = False) -> dict[str, Any]:
     if skill_name == "scout_navigation_manager":
         script_path = NAVIGATE_PATH
         script_rel_path = NAVIGATE_REL_PATH
@@ -576,6 +840,18 @@ def query_skill_status(skill_name: str, dry_run: bool = False) -> dict[str, Any]
     elif skill_name == "scout_move_control":
         script_path = MOVE_CLIENT_PATH
         script_rel_path = MOVE_CLIENT_REL_PATH
+        command = [sys.executable, str(script_rel_path), "--status"]
+    elif skill_name == "patrol_fixed_points":
+        script_path = PATROL_PATH
+        script_rel_path = PATROL_REL_PATH
+        command = [sys.executable, str(script_rel_path), "--status"]
+    elif skill_name == "check_person_detected":
+        script_path = CHECK_PERSON_PATH
+        script_rel_path = CHECK_PERSON_REL_PATH
+        command = [sys.executable, str(script_rel_path), "--status"]
+    elif skill_name == "trigger_existing_tracking_handoff":
+        script_path = HANDOFF_PATH
+        script_rel_path = HANDOFF_REL_PATH
         command = [sys.executable, str(script_rel_path), "--status"]
     else:
         raise ValueError(f"unsupported status skill: {skill_name}")
@@ -588,6 +864,7 @@ def query_skill_status(skill_name: str, dry_run: bool = False) -> dict[str, Any]
         {"query": "status"},
         dry_run=dry_run,
         operation="status",
+        timeout_seconds=get_skill_timeout(config or {}, skill_name, "status"),
     )
 
 
@@ -610,6 +887,7 @@ def agent_loop(user_text: str, config: dict[str, Any], skill_catalog: dict[str, 
     messages = build_messages(build_system_prompt(skill_catalog, max_actions), user_text)
     tools = build_tools(skill_catalog)
     executed_actions = []
+    steps = []
 
     for _ in range(max_actions + 1):
         raw = call_chat_completion(
@@ -631,6 +909,7 @@ def agent_loop(user_text: str, config: dict[str, Any], skill_catalog: dict[str, 
             return {
                 "reply": (raw_message.get("content") or "").strip(),
                 "actions": executed_actions,
+                "steps": steps,
             }
 
         for tool_call in tool_calls:
@@ -642,7 +921,29 @@ def agent_loop(user_text: str, config: dict[str, Any], skill_catalog: dict[str, 
                 raise ValueError(f"invalid tool call arguments for {tool_name}: {raw_arguments}") from exc
 
             validated_arguments = validate_tool_call(tool_name, parsed_arguments, skill_catalog)
-            result = execute_action(tool_name, validated_arguments, dry_run=dry_run)
+            timeout_seconds = get_skill_timeout(config, tool_name, "execute")
+            command, _, _ = build_execution_command(tool_name, validated_arguments)
+            step = build_step_record(
+                index=len(steps) + 1,
+                skill_name=tool_name,
+                arguments=validated_arguments,
+                operation="execute",
+                timeout_seconds=timeout_seconds,
+            )
+            steps.append(step)
+            emit_step_started(step, command)
+            result = execute_action(
+                tool_name,
+                validated_arguments,
+                config=config,
+                dry_run=dry_run,
+                timeout_seconds=timeout_seconds,
+            )
+            step["finished_at"] = utc_timestamp()
+            step["status"] = result.get("status", skill_protocol.SkillStatus.FAILED)
+            step["message"] = result.get("message", "")
+            step["result"] = result
+            emit_step_finished(step)
             executed_actions.append(result)
             messages.append(
                 {

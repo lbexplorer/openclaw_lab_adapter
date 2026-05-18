@@ -1,0 +1,15 @@
+default_patrol:
+  patrol_points:
+    - 原点
+    - 巡逻点2
+    - 巡逻点3
+    - 巡逻点4
+    - 原点
+  loop: false
+  stop_on_detection: false
+  waypoint_timeout_seconds: 120
+  status_poll_seconds: 1
+  detection_source: track_pose
+  detection_topic: /track_pose
+  detection_timeout_seconds: 0.2
+  detection_confidence_threshold: 0.5

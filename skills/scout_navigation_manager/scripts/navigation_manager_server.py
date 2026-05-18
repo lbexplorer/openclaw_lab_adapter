@@ -6,6 +6,7 @@
 """
 
 import argparse
+import json
 import os
 import re
 import threading
@@ -127,6 +128,34 @@ def load_waypoints(path):
     return metadata
 
 
+def goal_status_name(status):
+    """Return a readable actionlib goal status name."""
+    if GoalStatus is None:
+        return "UNKNOWN"
+    names = {
+        GoalStatus.PENDING: "PENDING",
+        GoalStatus.ACTIVE: "ACTIVE",
+        GoalStatus.PREEMPTED: "PREEMPTED",
+        GoalStatus.SUCCEEDED: "SUCCEEDED",
+        GoalStatus.ABORTED: "ABORTED",
+        GoalStatus.REJECTED: "REJECTED",
+        GoalStatus.PREEMPTING: "PREEMPTING",
+        GoalStatus.RECALLING: "RECALLING",
+        GoalStatus.RECALLED: "RECALLED",
+        GoalStatus.LOST: "LOST",
+    }
+    return names.get(status, "UNKNOWN")
+
+
+def format_navigation_failure_status(target, terminal_state):
+    """Build the status string consumed by navigation skills and agents."""
+    return "failed: target=%s state=%s(%s)" % (
+        target,
+        goal_status_name(terminal_state),
+        terminal_state,
+    )
+
+
 class ScoutNavigationManagerServer(object):
     """Scout导航管理服务器类。
 
@@ -147,6 +176,7 @@ class ScoutNavigationManagerServer(object):
         self._waypoints = metadata["positions"]
         self._alias_to_name = metadata["alias_to_name"]
         self._status = "ready"
+        self._cancel_requested = False
         self._lock = threading.Lock()
 
         # 创建move_base action客户端
@@ -154,6 +184,9 @@ class ScoutNavigationManagerServer(object):
         # 订阅设置姿态的话题
         self._topic_sub = rospy.Subscriber(
             "/scout_navigation_manager/set_pose", String, self._set_pose_topic_callback, queue_size=10
+        )
+        self._goal_dispatched_pub = rospy.Publisher(
+            "/scout_navigation_manager/goal_dispatched", String, queue_size=10, latch=True
         )
         # 提供导航状态服务
         self._status_srv = rospy.Service(
@@ -166,6 +199,9 @@ class ScoutNavigationManagerServer(object):
         # 提供获取导航模式的服务
         self._mode_srv = rospy.Service(
             "/scout_navigation_manager/get_navigation_mode", Trigger, self._get_navigation_mode_callback
+        )
+        self._cancel_srv = rospy.Service(
+            "/scout_navigation_manager/cancel_navigation", Trigger, self._cancel_navigation_callback
         )
         if SetString is not None:
             # 如果可用，提供设置姿态的服务
@@ -205,6 +241,20 @@ class ScoutNavigationManagerServer(object):
         with self._lock:
             return self._status
 
+    def _set_cancel_requested(self, value):
+        with self._lock:
+            self._cancel_requested = value
+
+    def _is_cancel_requested(self):
+        with self._lock:
+            return self._cancel_requested
+
+    def _consume_cancel_requested(self):
+        with self._lock:
+            value = self._cancel_requested
+            self._cancel_requested = False
+            return value
+
     def _navigation_status_callback(self, _request):
         """导航状态服务的回调函数。
 
@@ -237,6 +287,22 @@ class ScoutNavigationManagerServer(object):
             TriggerResponse: 返回导航模式（固定为"named_waypoints"）。
         """
         return TriggerResponse(success=True, message="named_waypoints")
+
+    def _cancel_navigation_callback(self, _request):
+        """Cancel the active move_base goal if one is running."""
+        current_status = self._get_status()
+        if not current_status.startswith("moving to "):
+            self._set_cancel_requested(False)
+            message = "no active navigation goal"
+            self._set_status("cancelled: %s" % message)
+            return TriggerResponse(success=True, message=message)
+
+        self._set_cancel_requested(True)
+        self._client.cancel_goal()
+        message = "navigation goal cancelled by request"
+        self._set_status("cancelled: %s" % message)
+        rospy.logwarn("Navigation cancelled: %s", current_status)
+        return TriggerResponse(success=True, message=message)
 
     def _resolve_target_name(self, raw_text):
         """解析目标名称，支持别名和模糊匹配。
@@ -301,6 +367,8 @@ class ScoutNavigationManagerServer(object):
             return False, "target name is empty"
         if self._get_status().startswith("moving to "):
             return False, "navigation is busy"
+        if self._is_cancel_requested():
+            return False, "navigation cancellation is still in progress"
 
         target_name = self._resolve_target_name(name)
         if target_name is None:
@@ -341,7 +409,21 @@ class ScoutNavigationManagerServer(object):
             goal,
             done_cb=lambda state, result, target=target_name: self._done_callback(target, state, result),
         )
+        self._publish_goal_dispatched(name, target_name, pose)
         return True, "true"
+
+    def _publish_goal_dispatched(self, requested_name, target_name, pose):
+        """Publish a lightweight confirmation after move_base accepts dispatch."""
+        payload = {
+            "status": "dispatched",
+            "requested": requested_name,
+            "target": target_name,
+            "x": pose["x"],
+            "y": pose["y"],
+            "frame_id": self._frame_id,
+            "map_id": self._map_id,
+        }
+        self._goal_dispatched_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
 
     def _done_callback(self, target, terminal_state, _result):
         """导航完成回调函数。
@@ -353,10 +435,21 @@ class ScoutNavigationManagerServer(object):
         """
         if terminal_state == GoalStatus.SUCCEEDED:
             self._set_status("finish")
+            self._set_cancel_requested(False)
             rospy.loginfo("Navigation finished: %s", target)
             return
-        self._set_status("ready")
-        rospy.logwarn("Navigation failed or ended early for %s, state=%s", target, terminal_state)
+        if self._consume_cancel_requested():
+            cancelled_status = "cancelled: target=%s state=%s(%s)" % (
+                target,
+                goal_status_name(terminal_state),
+                terminal_state,
+            )
+            self._set_status(cancelled_status)
+            rospy.logwarn("Navigation cancelled in move_base callback: %s", cancelled_status)
+            return
+        failed_status = format_navigation_failure_status(target, terminal_state)
+        self._set_status(failed_status)
+        rospy.logwarn("Navigation failed or ended early: %s", failed_status)
 
 
 def main():

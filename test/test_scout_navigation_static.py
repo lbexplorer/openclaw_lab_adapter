@@ -127,6 +127,54 @@ def check_waypoint_listing(navigate_module) -> None:
     print("[OK] 可用地点: " + ", ".join(names))
 
 
+def check_failure_status_preserved() -> None:
+    print_section("失败状态")
+    source = SERVER_PATH.read_text(encoding="utf-8")
+    if "format_navigation_failure_status" not in source:
+        fail("缺少导航失败状态格式化函数")
+    if 'failed: target=%s state=%s(%s)' not in source:
+        fail("导航失败状态未保留 target 和 actionlib state")
+    if 'self._set_status("ready")\n        rospy.logwarn("Navigation failed' in source:
+        fail("导航失败后不应直接把状态重置为 ready")
+    print("[OK] 导航失败状态会保留失败原因")
+
+
+def check_goal_dispatched_confirmation() -> None:
+    print_section("下发确认")
+    server_source = SERVER_PATH.read_text(encoding="utf-8")
+    client_source = NAVIGATE_PATH.read_text(encoding="utf-8")
+    if "/scout_navigation_manager/goal_dispatched" not in server_source:
+        fail("服务端缺少 goal_dispatched publisher")
+    if "latch=True" not in server_source:
+        fail("goal_dispatched publisher 应使用 latch=True，避免客户端错过确认消息")
+    if "_publish_goal_dispatched" not in server_source:
+        fail("服务端未在目标下发后发布确认消息")
+    if "default=10.0" not in client_source:
+        fail("navigate.py 下发确认默认等待时间应为 10 秒")
+    if "dispatch_confirmed=true" not in client_source:
+        fail("navigate.py 缺少 dispatch_confirmed=true 输出")
+    if "dispatch_confirmed=false" not in client_source:
+        fail("navigate.py 缺少 dispatch_confirmed=false 输出")
+    print("[OK] goal_dispatched 下发确认链路通过")
+
+
+def check_cancel_navigation_support() -> None:
+    print_section("取消导航")
+    server_source = SERVER_PATH.read_text(encoding="utf-8")
+    client_source = NAVIGATE_PATH.read_text(encoding="utf-8")
+    if "/scout_navigation_manager/cancel_navigation" not in server_source:
+        fail("服务端缺少 cancel_navigation 服务")
+    if "cancel_goal()" not in server_source:
+        fail("服务端取消导航时应调用 move_base cancel_goal()")
+    if "navigation cancellation is still in progress" not in server_source:
+        fail("取消回调完成前应拒绝新的导航目标，避免状态竞争")
+    if "--cancel" not in client_source:
+        fail("navigate.py 缺少 --cancel 参数")
+    if "cancel_navigation()" not in client_source:
+        fail("navigate.py 缺少 cancel_navigation 调用")
+    print("[OK] 取消导航链路通过")
+
+
 def main() -> None:
     print("项目根目录:", ROOT_DIR)
     check_files_exist()
@@ -135,6 +183,9 @@ def main() -> None:
     navigate_module = load_module(NAVIGATE_PATH, "navigate_module")
     check_waypoint_listing(navigate_module)
     check_mapping_logic(navigate_module)
+    check_failure_status_preserved()
+    check_goal_dispatched_confirmation()
+    check_cancel_navigation_support()
     print_section("结果")
     print("[OK] scout_navigation_manager 静态测试通过")
 
